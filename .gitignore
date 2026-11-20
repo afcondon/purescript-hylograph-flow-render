@@ -1,0 +1,7 @@
+output/
+.spago/
+node_modules/
+.DS_Store
+# Not kept while hylograph-flow is taken by path (see spago.yaml): the lock
+# would record that path. Remove this line once it comes from the registry.
+spago.lock
