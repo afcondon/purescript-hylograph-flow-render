@@ -14,10 +14,13 @@ import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Console (log)
 import Effect.Ref as Ref
-import Hylograph.Flow (Drawing(..), ElementKey(..), Flow, GroupId(..), ItemId(..), PortName(..), StepId(..), WireId(..), project)
+import Data.Set as Set
+import Hylograph.Flow (Drawing(..), ElementKey(..), Flow, GroupId(..), ItemId(..), PortName(..), StepId(..), WireId(..), erase, project)
+import Hylograph.Flow.Grouping (Grouping(Holds, Member), collapse)
+import Hylograph.Flow.Grouping as Grouping
 import Hylograph.Flow.Overlay (overlay)
 import Hylograph.Flow.Render.Layout (Course(..), Layout, Widths(..), defaultMetrics, layout)
-import Hylograph.Flow.Render.Tree (Decoration, Gesture, Pointed(..), keyName, plainDecoration, pointedBy, tree, withOverlay)
+import Hylograph.Flow.Render.Tree (Decoration, Gesture, Pointed(..), groupOf, keyName, plainDecoration, pointedBy, tree, withGroups, withOverlay)
 import Hylograph.Flow.Render.Tree as Gesture
 import Hylograph.HATS (ElementType(..))
 import Test.Render.Fixtures (drawings, expect, expectNone, flowOf, quantity, sankeyMetrics, single, subjects, weighted)
@@ -299,3 +302,31 @@ suite = do
         ]
         == [ "step:group:G", "group:G", "writes:group:G.add.total>total" ]
     )
+  expect "keyName tells a closed group's summary from an item named as one reads, and writes the summary's port as it reads"
+    ( map keyName
+        [ ItemKey (ItemId "group:G")
+        , ItemKey (GroupItem (GroupId "G"))
+        , WireKey (Writes (GroupStep (GroupId "G")) (SummaryPort (GroupId "G")) (GroupItem (GroupId "G")))
+        ]
+        == [ "item:group:G", "summary:G", "writes:group:G.summary:G>group:G" ]
+    )
+
+  log "render: a closed group's dress is the caller's"
+  let
+    sheets = collapse
+      [ Grouping.Group (GroupId "Data") "Data" [ Holds (ItemId "amount"), Holds (ItemId "total"), Member (StepId "add") ] ]
+      (Set.singleton (GroupId "Data"))
+      (erase (flowOf [] [ { step: "add", reads: [ single "amount", single "total" ], writes: [ single "total" ] }, { step: "print", reads: [ single "total" ], writes: [] } ]))
+    grouped :: forall wire. Decoration wire
+    grouped = withGroups (\(GroupId group) mark -> mark { className = "flow-group", note = Just group }) plainDecoration
+  expect "groupOf: a group's step and its summary are the group's; a source's step and item are no group's"
+    ( map groupOf [ StepKey (GroupStep (GroupId "Data")), ItemKey (GroupItem (GroupId "Data")), StepKey (StepId "add"), ItemKey (ItemId "total") ]
+        == [ Just (GroupId "Data"), Just (GroupId "Data"), Nothing, Nothing ]
+    )
+  case pictureOf grouped (layout defaultMetrics Plain (project Both sheets)) of
+    Right picture ->
+      expect "withGroups: the group's step and its summary carry the class and the note; the step outside does not"
+        ( Array.sort (picture.nodes <#> \mark -> Tuple (attribute "data-key" mark) (Tuple (hasClass "flow-group" mark) (textOf "flow-note" mark)))
+            == [ Tuple (Just "group:Data") (Tuple true [ Just "Data" ]), Tuple (Just "step:print") (Tuple false []), Tuple (Just "summary:Data") (Tuple true [ Just "Data" ]) ]
+        )
+    Left why -> expect why false

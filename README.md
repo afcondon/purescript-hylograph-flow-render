@@ -30,6 +30,12 @@ caller's decoration; a dashed edge turns back to close a cycle.*
 - **The dress is the caller's.** Labels, notes, classes and colours come
   from a `Decoration`; what an `Overlay` knows of an element changes its
   mark; clicks and the pointer's coming and going are reported by element.
+- **A closed group is a step like any other, unless the caller says so.**
+  `hylograph-flow`'s `collapse` makes a closed group one step and, where it
+  provides anything, one summary item. They are drawn as steps and items
+  are; `withGroups` changes their marks by group, and `groupOf` says which
+  group a clicked element is, for a page that opens a group where it
+  stands.
 - **Laws as a function.** `Hylograph.Flow.Render.Laws.faults` returns
   everything wrong with a layout, in words, so that you can hold the layout
   of your own flows to it in your own tests.
@@ -87,7 +93,7 @@ the wires it stands for, so the width of an edge that is one wire is
 | Module | What it holds |
 |---|---|
 | `Hylograph.Flow.Render.Layout` | `layout :: Metrics -> Widths wire -> Projection wire -> Layout wire`. Pure, so it runs anywhere, without a DOM. |
-| `Hylograph.Flow.Render.Tree` | `tree :: Decoration wire -> Layout wire -> Tree`. Items as open boxes, steps as filled lozenges. `plainDecoration`, `withOverlay`, `keyName`. |
+| `Hylograph.Flow.Render.Tree` | `tree :: Decoration wire -> Layout wire -> Tree`. Items as open boxes, steps as filled lozenges. `plainDecoration`, `withOverlay`, `withGroups`, `groupOf`, `keyName`. |
 | `Hylograph.Flow.Render.Laws` | `faults`, `layoutFaults`: what must hold of any layout, as a function that returns what does not. |
 
 What is drawn, for a stylesheet or a test to find:
@@ -105,7 +111,7 @@ svg.flow
 spago install hylograph-flow-render
 ```
 
-It depends on `hylograph-flow`, `hylograph-layout` (0.6.0 or later),
+It depends on `hylograph-flow` (0.2.0 or later), `hylograph-layout` (0.6.0 or later),
 `hylograph-graph` (0.3.1 or later) and `hylograph-selection` (0.6.0 or
 later), and on `arrays`, `effect`, `foldable-traversable`, `integers`,
 `maybe`, `numbers`, `ordered-collections`, `prelude`, `strings` and

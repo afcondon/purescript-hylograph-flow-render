@@ -30,7 +30,7 @@ import Data.Maybe (Maybe(..))
 import Effect (Effect)
 import Effect.Console (log)
 import Effect.Exception (throw)
-import Hylograph.Flow (Drawing(..), ElementKey(..), Flow(..), ItemId(..), PortName(..), StepId(..), WireId(..), stepLabel)
+import Hylograph.Flow (Drawing(..), ElementKey(..), Flow(..), ItemId(..), PortName(..), StepId(..), WireId(..), itemLabel, stepLabel)
 import Hylograph.Flow.Render.Layout (Metrics, Widths(..), defaultMetrics)
 
 expect :: String -> Boolean -> Effect Unit
@@ -121,7 +121,7 @@ drawings =
   ]
   where
   early = case _ of
-    ItemKey (ItemId name) -> name <= "c"
+    ItemKey item -> itemLabel item <= "c"
     StepKey step -> stepLabel step <= "c"
     WireKey _ -> false
 

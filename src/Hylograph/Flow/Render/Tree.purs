@@ -10,6 +10,11 @@
 -- | whatever an `Overlay` knows of it (`withOverlay`). Clicks and the
 -- | pointer's coming and going are told to the caller by element.
 -- |
+-- | A closed group (`Hylograph.Flow.Grouping.collapse`) is a step and, where
+-- | it provides anything, a summary item, and is drawn as any step and any
+-- | item are. Whether it should look otherwise is the caller's to say too:
+-- | `withGroups` changes the marks of a group's step and summary, by group.
+-- |
 -- | What is drawn, for a stylesheet or a test to find:
 -- |
 -- | ```
@@ -26,6 +31,8 @@ module Hylograph.Flow.Render.Tree
   , Decoration
   , plainDecoration
   , withOverlay
+  , withGroups
+  , groupOf
   , pointedBy
   , keyName
   , tree
@@ -37,7 +44,7 @@ import Data.Array as Array
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Maybe (Maybe(..), fromMaybe)
 import Effect (Effect)
-import Hylograph.Flow (Edge, ElementKey(..), GroupId(..), ItemId(..), Node, StepId(..), WireId(..), portLabel, stepLabel)
+import Hylograph.Flow (Edge, ElementKey(..), GroupId(..), ItemId(..), Node, StepId(..), WireId(..), itemLabel, portLabel, stepLabel)
 import Hylograph.Flow.Overlay (Overlay)
 import Hylograph.Flow.Overlay as Overlay
 import Hylograph.Flow.Render.Layout (Course(..), Layout, PlacedEdge, PlacedNode)
@@ -103,6 +110,24 @@ withOverlay known onNode onEdge decoration = decoration
       _ -> decoration.edge edge
   }
 
+-- | The closed group an element is: its step or its summary item.
+groupOf :: ElementKey -> Maybe GroupId
+groupOf = case _ of
+  StepKey (GroupStep group) -> Just group
+  ItemKey (GroupItem group) -> Just group
+  _ -> Nothing
+
+-- | A decoration changed for closed groups: the mark of a group's step and
+-- | of its summary item, by the group. (A click on either is told as any
+-- | click is, by its element; `groupOf` says which group that is, for a
+-- | page that opens a group where it stands.)
+withGroups :: forall wire. (GroupId -> Mark -> Mark) -> Decoration wire -> Decoration wire
+withGroups onGroup decoration = decoration
+  { node = \node -> case groupOf node.key of
+      Just group -> onGroup group (decoration.node node)
+      Nothing -> decoration.node node
+  }
+
 -- | What an edge is, for a gesture or an overlay: the wire it is, where it
 -- | stands for one wire, by the identity the edge carries.
 pointedBy :: forall wire. Edge wire -> Pointed
@@ -112,16 +137,19 @@ pointedBy edge = case NonEmptyArray.toArray edge.wires of
 
 -- | An element's key as one string, for `data-key` and for HATS's keys.
 -- | A closed group's step is `group:` and the group's id where a source's
--- | step is `step:` and its name, so a step and a group never share a key.
--- | Inside a wire's key the step and the port are written as they read
--- | (`stepLabel`, `portLabel`).
+-- | step is `step:` and its name, so a step and a group never share a key;
+-- | likewise a closed group's summary item is `summary:` and the group's id
+-- | where a source's item is `item:` and its name. Inside a wire's key the
+-- | item, the step and the port are written as they read (`itemLabel`,
+-- | `stepLabel`, `portLabel`).
 keyName :: ElementKey -> String
 keyName = case _ of
   ItemKey (ItemId item) -> "item:" <> item
+  ItemKey (GroupItem (GroupId group)) -> "summary:" <> group
   StepKey (StepId name) -> "step:" <> name
   StepKey (GroupStep (GroupId group)) -> "group:" <> group
-  WireKey (Reads (ItemId item) step port) -> "reads:" <> item <> ">" <> stepLabel step <> "." <> portLabel port
-  WireKey (Writes step port (ItemId item)) -> "writes:" <> stepLabel step <> "." <> portLabel port <> ">" <> item
+  WireKey (Reads item step port) -> "reads:" <> itemLabel item <> ">" <> stepLabel step <> "." <> portLabel port
+  WireKey (Writes step port item) -> "writes:" <> stepLabel step <> "." <> portLabel port <> ">" <> itemLabel item
 
 ink :: String
 ink = "#161616"

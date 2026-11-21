@@ -4,7 +4,7 @@ workspace:
   extraPackages:
     # None of these four is in package set 77.13.1 at the version the
     # ranges below ask for, so each is named at its published version.
-    hylograph-flow: "0.1.0"
+    hylograph-flow: "0.2.0"
     hylograph-graph: "0.3.1"
     hylograph-layout: "0.6.0"
     hylograph-selection: "0.6.0"
@@ -16,7 +16,7 @@ package:
     plain DAG when every edge is as wide as every other and a Sankey when a
     wire's payload says how wide, and one HATS tree of it.
   publish:
-    version: 0.1.0
+    version: 0.2.0
     license: MIT
     location:
       githubOwner: afcondon
@@ -25,7 +25,7 @@ package:
     - arrays: ">=7.3.0 <8.0.0"
     - effect: ">=4.0.0 <5.0.0"
     - foldable-traversable: ">=6.0.0 <7.0.0"
-    - hylograph-flow: ">=0.1.0 <0.2.0"
+    - hylograph-flow: ">=0.2.0 <0.3.0"
     - hylograph-graph: ">=0.3.1 <0.4.0"
     - hylograph-layout: ">=0.6.0 <0.7.0"
     - hylograph-selection: ">=0.6.0 <0.7.0"
