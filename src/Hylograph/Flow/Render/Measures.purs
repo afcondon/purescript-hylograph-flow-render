@@ -19,7 +19,14 @@
 -- |   ends strictly on opposite sides of the other piece. Touching does not
 -- |   count: two edges that leave one point, an edge that turns exactly on
 -- |   another, and two edges that run along one line (a shared trunk) cross
--- |   nowhere. Two edges that cross twice count twice.
+-- |   nowhere. Two edges that cross twice count twice. **Nor does meeting
+-- |   at a shared end**: where the two edges have a node in common and the
+-- |   point of crossing is within `skin` (1 pixel) of where each of them
+-- |   ends at that node, they meet there, as two edges into one port do
+-- |   when their ends are computed a hair apart; any other crossing of two
+-- |   edges with a node in common counts. (Since 0.3.1; before, such a
+-- |   meeting counted one.) A crossing exactly at a point where both lines
+-- |   are cut into pieces is a touch by this rule and is not counted.
 -- | - `edgeLength`: the sum of the lengths of every edge's line, pixels.
 -- | - `bends`: total turning, in right angles: the sum over every interior
 -- |   point of every line of the angle turned there, divided by 90
@@ -76,7 +83,7 @@ import Prelude
 import Data.Array as Array
 import Data.Foldable (foldl, sum)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Number (pi)
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
@@ -184,6 +191,22 @@ properly p q =
 crossings :: Drawn -> Int
 crossings drawn = sweep 0 0
   where
+  edges = drawn.edges
+  -- where an edge ends at a node, if it has an end there
+  endAt node index = Array.index edges index >>= \drawnEdge ->
+    if drawnEdge.from == node then Array.head drawnEdge.points
+    else if drawnEdge.to == node then Array.last drawnEdge.points
+    else Nothing
+  nodesOf index = maybe [] (\drawnEdge -> Array.filter (_ >= 0) [ drawnEdge.from, drawnEdge.to ]) (Array.index edges index)
+  -- the two pieces cross where the two edges meet at a node they share
+  meeting piece other = case intersection piece other of
+    Nothing -> false
+    Just at -> Array.any
+      ( \node -> case endAt node piece.edge, endAt node other.edge of
+          Just one, Just two -> distance at one <= skin && distance at two <= skin
+          _, _ -> false
+      )
+      (Array.filter (\node -> Array.elem node (nodesOf other.edge)) (nodesOf piece.edge))
   pieces = Array.sortWith _.left (piecesOf drawn)
   count = Array.length pieces
   sweep at found =
@@ -197,7 +220,18 @@ crossings drawn = sweep 0 0
     Just other ->
       if other.left > piece.right then found
       else against piece (at + 1)
-        (if other.edge /= piece.edge && other.top <= piece.bottom && piece.top <= other.bottom && properly piece other then found + 1 else found)
+        (if other.edge /= piece.edge && other.top <= piece.bottom && piece.top <= other.bottom && properly piece other && not (meeting piece other) then found + 1 else found)
+
+-- | Where two pieces' lines cross, if they are not parallel.
+intersection :: Piece -> Piece -> Maybe Point
+intersection p q =
+  let
+    r = { x: p.b.x - p.a.x, y: p.b.y - p.a.y }
+    d = { x: q.b.x - q.a.x, y: q.b.y - q.a.y }
+    denominator = r.x * d.y - r.y * d.x
+    t = ((q.a.x - p.a.x) * d.y - (q.a.y - p.a.y) * d.x) / denominator
+  in
+    if denominator == 0.0 then Nothing else Just { x: p.a.x + t * r.x, y: p.a.y + t * r.y }
 
 edgeLength :: Drawn -> Number
 edgeLength drawn = sum (piecesOf drawn <#> \piece -> distance piece.a piece.b)

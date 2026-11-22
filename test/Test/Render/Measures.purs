@@ -112,6 +112,78 @@ fan =
   , outlines: []
   }
 
+-- ---------------------------------------------------------------------------
+-- crossings where edges share an end (counted by hand)
+-- ---------------------------------------------------------------------------
+
+-- one cubic piece from `a` to `b`, leaving towards `c1` and arriving from `c2`
+curve :: { x :: Number, y :: Number } -> { x :: Number, y :: Number } -> { x :: Number, y :: Number } -> { x :: Number, y :: Number } -> Array { x :: Number, y :: Number }
+curve a c1 c2 b = Route.flatten (Spline { from: a, curves: NonEmptyArray.singleton { leaving: c1, arriving: c2, to: b } })
+
+point :: Number -> Number -> { x :: Number, y :: Number }
+point x y = { x, y }
+
+-- two nodes on the left, two on the right, edges between them as given
+shared :: Array { from :: Int, to :: Int, points :: Array { x :: Number, y :: Number } } -> Drawn
+shared edges = { nodes: [ box 0.0 0.0, box 200.0 0.0, box 200.0 100.0, box 0.0 100.0 ], edges, outlines: [] }
+
+-- two curves leave one point of node 0 and part, one to each node on the right
+leaving :: Drawn
+leaving = shared
+  [ { from: 0, to: 1, points: curve (point 20.0 10.0) (point 110.0 10.0) (point 110.0 10.0) (point 200.0 10.0) }
+  , { from: 0, to: 2, points: curve (point 20.0 10.0) (point 110.0 10.0) (point 110.0 110.0) (point 200.0 110.0) }
+  ]
+
+-- the same, turned round: two curves arrive at one point of node 1
+arriving :: Drawn
+arriving = shared
+  [ { from: 0, to: 1, points: curve (point 20.0 10.0) (point 110.0 10.0) (point 110.0 10.0) (point 200.0 10.0) }
+  , { from: 3, to: 1, points: curve (point 20.0 110.0) (point 110.0 110.0) (point 110.0 10.0) (point 200.0 10.0) }
+  ]
+
+-- two edges between the same two nodes, from one point to one point, bowed
+-- apart (one up, one down), and bowed the same way by different amounts
+parallel :: Drawn
+parallel = shared
+  [ { from: 0, to: 1, points: curve (point 20.0 10.0) (point 80.0 (-30.0)) (point 140.0 (-30.0)) (point 200.0 10.0) }
+  , { from: 0, to: 1, points: curve (point 20.0 10.0) (point 80.0 50.0) (point 140.0 50.0) (point 200.0 10.0) }
+  , { from: 0, to: 1, points: curve (point 20.0 10.0) (point 80.0 (-10.0)) (point 140.0 (-10.0)) (point 200.0 10.0) }
+  ]
+
+-- the same three, each from its own port and to its own port, a few pixels apart
+parallelPorts :: Drawn
+parallelPorts = shared
+  [ { from: 0, to: 1, points: curve (point 20.0 6.0) (point 80.0 (-34.0)) (point 140.0 (-34.0)) (point 200.0 6.0) }
+  , { from: 0, to: 1, points: curve (point 20.0 14.0) (point 80.0 54.0) (point 140.0 54.0) (point 200.0 14.0) }
+  , { from: 0, to: 1, points: curve (point 20.0 10.0) (point 80.0 (-10.0)) (point 140.0 (-10.0)) (point 200.0 10.0) }
+  ]
+
+-- two curves with no end in common that cross once, near half way (not
+-- symmetric: two mirror-image curves meet exactly at a point where each is
+-- cut into pieces, which by this rule is a touch)
+crossingOnce :: Drawn
+crossingOnce = shared
+  [ { from: 0, to: 2, points: curve (point 20.0 10.0) (point 110.0 10.0) (point 110.0 110.0) (point 200.0 110.0) }
+  , { from: 3, to: 1, points: curve (point 20.0 100.0) (point 100.0 100.0) (point 120.0 15.0) (point 200.0 15.0) }
+  ]
+
+-- two curves leave one point: the first sets off right and ends low, the
+-- second sets off down and ends high, so on the way they change sides
+interleaving :: Drawn
+interleaving = shared
+  [ { from: 0, to: 2, points: curve (point 20.0 10.0) (point 120.0 10.0) (point 120.0 110.0) (point 200.0 110.0) }
+  , { from: 0, to: 1, points: curve (point 20.0 10.0) (point 20.0 90.0) (point 110.0 10.0) (point 200.0 10.0) }
+  ]
+
+-- two straight edges into node 1 from above and below that meet at its
+-- side, their ends a ten-millionth of a pixel apart (as two clippings of
+-- one point may leave them)
+hairApart :: Drawn
+hairApart = shared
+  [ { from: 0, to: 1, points: [ point 20.0 0.0, point 200.0 10.0 ] }
+  , { from: 3, to: 1, points: [ point 20.0 110.0, point 200.0 (10.0 - 1.0e-7) ] }
+  ]
+
 suite :: Effect Unit
 suite = do
   log "render: a route is data; its points, its length, its bends and its path are read from it"
@@ -143,6 +215,15 @@ suite = do
   expect "it trespasses on the outline it has no end in, and not on the one its end is in" (outlineTrespasses dogLeg == 1)
   expect "one node is in an outline that is not its own: the edge's target is not, the node the edge passes is a member" (strangersIn dogLeg == 0 && strangersIn (dogLeg { outlines = [ { box: { x: 80.0, y: -10.0, width: 40.0, height: 40.0 }, members: [] } ] }) == 1)
   expect "edges that leave one point, and edges that share a trunk, do not cross" (crossings fan == 0)
+
+  log "render: crossings where edges share an end, counted by hand"
+  expect "two curves that leave one point and part never cross" (crossings leaving == 0)
+  expect "two curves that arrive at one point never cross" (crossings arriving == 0)
+  expect "three bowed curves between the same two points, apart and nested, never cross" (crossings parallel == 0)
+  expect "the same three from ports and to ports a few pixels apart never cross" (crossings parallelPorts == 0)
+  expect "two curves with no end in common that cross half way cross once" (crossings crossingOnce == 1)
+  expect "two curves from one point that change sides on the way cross once" (crossings interleaving == 1)
+  expect "two edges that meet at a node's side, their ends a hair apart, do not cross" (crossings hairApart == 0)
   expect "no two boxes of the fan overlap" (nodeOverlaps fan == 0)
   expect "two boxes with a corner in common overlap" (nodeOverlaps (fan { nodes = [ box 0.0 0.0, box 10.0 10.0 ] }) == 1)
   expect "two boxes that touch along a side do not" (nodeOverlaps (fan { nodes = [ box 0.0 0.0, box 20.0 0.0 ] }) == 0)

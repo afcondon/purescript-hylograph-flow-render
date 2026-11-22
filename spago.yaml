@@ -18,7 +18,7 @@ package:
     how wide), laws and measures of any engine's layout, and one HATS tree
     of it.
   publish:
-    version: 0.3.0
+    version: 0.3.1
     license: MIT
     location:
       githubOwner: afcondon

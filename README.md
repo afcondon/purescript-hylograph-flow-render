@@ -211,6 +211,16 @@ svg.flow[data-direction=left-to-right|top-down]
                      rect.flow-port.flow-port-in|.flow-port-out[data-port]*
 ```
 
+## Changes in 0.3.1
+
+`crossings` no longer counts two edges meeting at a node they share: a
+proper crossing of two edges with a node in common, within `skin` (1 pixel)
+of where each ends at that node, is a meeting (two edges into one port
+whose ends were computed a hair apart scored one crossing before). Every
+other crossing counts as before. Hand-counted cases of edges leaving one
+node, arriving at one node, bowed in parallel between two nodes, and
+changing sides after a shared start are in the suite.
+
 ## Changes in 0.3.0
 
 Added: the layout is pluggable (`Engine`, `Promise`, `run`, `Picture`,
