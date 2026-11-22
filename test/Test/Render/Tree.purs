@@ -2,14 +2,14 @@
 -- | for each placed edge, and what the caller's decoration says, on the
 -- | element it was said of. (The page's browser check sees the same tree as
 -- | a DOM; this needs neither a browser nor an adapter.)
-module Test.Render.Tree (suite) where
+module Test.Render.Tree (suite, Picture, pictureOf, structureFaults, textOf, keyed, partsOf) where
 
 import Prelude
 
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (for_, sequence_)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), isJust)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Console (log)
@@ -19,8 +19,11 @@ import Hylograph.Flow (Drawing(..), ElementKey(..), Flow, GroupId(..), ItemId(..
 import Hylograph.Flow.Grouping (Grouping(Holds, Member), collapse)
 import Hylograph.Flow.Grouping as Grouping
 import Hylograph.Flow.Overlay (overlay)
-import Hylograph.Flow.Render.Layout (Course(..), Layout, Widths(..), defaultMetrics, layout)
-import Hylograph.Flow.Render.Tree (Decoration, Gesture, Pointed(..), groupOf, keyName, plainDecoration, pointedBy, tree, withGroups, withOverlay)
+import Hylograph.Flow.Render.Engine as Engine
+import Hylograph.Flow.Render.Layout (Course(..), Layout, Widths(..), defaultMetrics, layout, portPoint)
+import Hylograph.Flow.Render.Route (Route(..))
+import Hylograph.Flow.Render.Route as Route
+import Hylograph.Flow.Render.Tree (Decoration, Gesture, Pointed(..), directionName, groupName, groupOf, keyName, plainDecoration, pointedBy, portSide, strokeOf, tree, withGroups, withOverlay)
 import Hylograph.Flow.Render.Tree as Gesture
 import Hylograph.HATS (ElementType(..))
 import Test.Render.Fixtures (drawings, expect, expectNone, flowOf, quantity, sankeyMetrics, single, subjects, weighted)
@@ -31,14 +34,14 @@ elementOf (Realized r) = r.element
 
 -- | The parts of a realized picture: the root, the edge marks and the node
 -- | marks; or why it has not that shape.
-type Picture = { root :: Realized, edges :: Array Realized, nodes :: Array Realized }
+type Picture = { root :: Realized, outlines :: Array Realized, edges :: Array Realized, nodes :: Array Realized }
 
 pictureOf :: forall wire. Decoration wire -> Layout wire -> Either String Picture
 pictureOf decoration laid = realize (tree decoration laid) >>= case _ of
   [ root ] -> case children root of
-    [ edgeGroup, nodeGroup ]
-      | hasClass "flow-edges" edgeGroup && hasClass "flow-nodes" nodeGroup -> Right { root, edges: children edgeGroup, nodes: children nodeGroup }
-    _ -> Left "the root has not exactly the group of edges and then the group of nodes"
+    [ outlineGroup, edgeGroup, nodeGroup ]
+      | hasClass "flow-outlines" outlineGroup && hasClass "flow-edges" edgeGroup && hasClass "flow-nodes" nodeGroup -> Right { root, outlines: children outlineGroup, edges: children edgeGroup, nodes: children nodeGroup }
+    _ -> Left "the root has not exactly the group of outlines, then the group of edges, then the group of nodes"
   roots -> Left ("the tree is " <> show (Array.length roots) <> " elements at the top, not one")
 
 -- | The children of a mark that are of a class.
@@ -46,8 +49,8 @@ partsOf :: String -> Realized -> Array Realized
 partsOf className mark = Array.filter (hasClass className) (children mark)
 
 -- | Every fault in the tree of a layout, whatever the decoration: the marks
--- | are the placed nodes and edges, each once, in order, each where and what
--- | the layout says.
+-- | are the placed outlines, nodes and edges, each once, in order, each where
+-- | and what the layout says.
 structureFaults :: forall wire. Decoration wire -> Layout wire -> Array String
 structureFaults decoration laid = case pictureOf decoration laid of
   Left why -> [ why ]
@@ -65,14 +68,44 @@ structureFaults decoration laid = case pictureOf decoration laid of
               must "is not a path of class flow-edge" (elementOf mark == Path && hasClass "flow-edge" mark)
                 <> must "has not the edge's index" (said "data-edge" mark == Just (show placed.index))
                 <> must "has not the edge's ends" (said "data-from" mark == Just (keyName placed.edge.from) && said "data-to" mark == Just (keyName placed.edge.to))
-                <> must "has not the layout's path" (said "d" mark == Just placed.path)
-                <> must "is not stroked as wide as the layout says" (said "stroke-width" mark == Just (show placed.stroke))
+                <> must "has not for its path the route the layout gave it" (said "d" mark == Just (Route.svgPath placed.route))
+                <> must "is not stroked as wide as its route says" (said "stroke-width" mark == Just (show (strokeOf placed.route)))
+                <> must "is not marked as the kind of route it is" (hasClass "flow-ribbon" mark == isRibbon placed.route && hasClass "flow-polyline" mark == isPolyline placed.route && hasClass "flow-spline" mark == isSpline placed.route)
                 <> must "is filled" (said "fill" mark == Just "none")
                 <> must "is not marked backward exactly where the layout turns it back" (hasClass "flow-backward" mark == (placed.course == Backward))
                 <> must "has not three gestures, a click, an entering and a leaving" (Array.length (clicks mark) == 1 && Array.length (enters mark) == 1 && Array.length (leaves mark) == 1)
         )
         laid.edges
         picture.edges
+      outlineFaults = Array.concat $ Array.zipWith
+        ( \placed mark ->
+            let
+              name = "the mark of the outline of " <> show placed.group
+              must what ok = if ok then [] else [ name <> " " <> what ]
+            in
+              must "is not a group of class flow-outline" (elementOf mark == Group && hasClass "flow-outline" mark)
+                <> must "has not the group's id" (said "data-group" mark == Just (groupName placed.group))
+                <> must "has not its depth" (said "data-depth" mark == Just (show placed.depth))
+                <> must "has not three gestures, a click, an entering and a leaving" (Array.length (clicks mark) == 1 && Array.length (enters mark) == 1 && Array.length (leaves mark) == 1)
+                <> case partsOf "flow-outline-box" mark of
+                  [ box ] ->
+                    must "has a box that is not the layout's, or that is filled, or that takes gestures"
+                      ( elementOf box == Rect
+                          && said "x" box == Just (show placed.box.x)
+                          && said "y" box == Just (show placed.box.y)
+                          && said "width" box == Just (show placed.box.width)
+                          && said "height" box == Just (show placed.box.height)
+                          && said "fill" box == Just "none"
+                          && said "pointer-events" box == Just "none"
+                      )
+                  _ -> [ name <> " has not exactly one box" ]
+                <> case partsOf "flow-outline-tab" mark of
+                  [ tab ] -> must "has a tab that is not at the top left of its box, as tall as its strip" (said "x" tab == Just (show placed.box.x) && said "y" tab == Just (show placed.box.y) && said "height" tab == Just (show placed.header))
+                  _ -> [ name <> " has not exactly one tab" ]
+                <> must "has not exactly one label, the group's name" (map (attribute "textContent") (partsOf "flow-outline-label" mark) == [ Just placed.name ])
+        )
+        laid.outlines
+        picture.outlines
       nodeFaults = Array.concat $ Array.zipWith
         ( \placed mark ->
             let
@@ -97,18 +130,52 @@ structureFaults decoration laid = case pictureOf decoration laid of
                       )
                   _ -> [ name <> " has not exactly one box" ]
                 <> must "has not exactly one label" (Array.length (partsOf "flow-label" mark) == 1)
+                <> must "is not marked lettered exactly where the layout set its words" (hasClass "flow-lettered" mark == isJust placed.words)
+                <> must "has not one square for each port the layout placed, centred on the port, open for an input and filled for an output"
+                  ( (partsOf "flow-port" mark <#> \square -> { x: said "x" square, y: said "y" square, input: hasClass "flow-port-in" square, output: hasClass "flow-port-out" square })
+                      == (placed.ports <#> \port ->
+                        let
+                          point = portPoint placed.box port
+                        in
+                          { x: Just (show (point.x - portSide / 2.0)), y: Just (show (point.y - portSide / 2.0)), input: port.flow == Engine.Input, output: port.flow == Engine.Output })
+                  )
+                <> case placed.words of
+                  Nothing -> must "has lines the layout did not set" (Array.null (partsOf "flow-label-more" mark) && Array.null (partsOf "flow-detail" mark))
+                  Just set -> must "has not the lines the layout set, title and then detail"
+                    ( map (attribute "textContent") (partsOf "flow-label" mark <> partsOf "flow-label-more" mark) == map Just set.title
+                        && map (attribute "textContent") (partsOf "flow-detail" mark) == map Just set.detail
+                    )
         )
         laid.nodes
         picture.nodes
     in
       (if elementOf picture.root == SVG && hasClass "flow" picture.root then [] else [ "the root is not an svg of class flow" ])
+        <> (if said "data-direction" picture.root == Just (directionName laid.direction) then [] else [ "the root does not say the layout's direction" ])
         <> (if said "width" picture.root == Just (show (laid.width + 4.0)) && said "height" picture.root == Just (show (laid.height + 4.0)) then [] else [ "the root is not the layout's size and a margin" ])
         <> (if Array.length picture.nodes == Array.length laid.nodes then [] else [ show (Array.length picture.nodes) <> " node marks for " <> show (Array.length laid.nodes) <> " placed nodes" ])
         <> (if Array.length picture.edges == Array.length laid.edges then [] else [ show (Array.length picture.edges) <> " edge marks for " <> show (Array.length laid.edges) <> " placed edges" ])
+        <> (if Array.length picture.outlines == Array.length laid.outlines then [] else [ show (Array.length picture.outlines) <> " outline marks for " <> show (Array.length laid.outlines) <> " placed outlines" ])
+        <> (if count (hasClass "flow-outline") == Array.length laid.outlines then [] else [ "there is an outline mark outside the group of outlines" ])
+        <> outlineFaults
         <> (if count (hasClass "flow-node") == Array.length laid.nodes then [] else [ "there is a node mark outside the group of nodes" ])
         <> (if count (\mark -> elementOf mark == Path) == Array.length laid.edges then [] else [ "there is a path that is no edge's mark" ])
         <> edgeFaults
         <> nodeFaults
+
+isRibbon :: Route -> Boolean
+isRibbon = case _ of
+  Ribbon _ -> true
+  _ -> false
+
+isPolyline :: Route -> Boolean
+isPolyline = case _ of
+  Polyline _ -> true
+  _ -> false
+
+isSpline :: Route -> Boolean
+isSpline = case _ of
+  Spline _ -> true
+  _ -> false
 
 -- | The mark with a key, among node marks.
 keyed :: ElementKey -> Array Realized -> Array Realized
@@ -226,9 +293,9 @@ suite = do
   case pictureOf plainDecoration bandsLaid of
     Right picture ->
       expect "by quantity every edge wider than three pixels is a band, stroked as wide as it is and let through"
-        ( Array.all (\e -> e.stroke > 3.0) bandsLaid.edges
+        ( Array.all (\e -> strokeOf e.route > 3.0) bandsLaid.edges
             && Array.all (\mark -> hasClass "flow-band" mark && not (hasClass "flow-hairline" mark) && attribute "stroke-opacity" mark == Just "0.22") picture.edges
-            && map (attribute "stroke-width") picture.edges == map (Just <<< show <<< _.width) bandsLaid.edges
+            && map (attribute "stroke-width") picture.edges == map (Just <<< show <<< strokeOf <<< _.route) bandsLaid.edges
         )
     Left why -> expect why false
 

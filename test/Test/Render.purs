@@ -17,8 +17,13 @@ import Hylograph.Flow (Drawing(..), ElementKey(..), ItemId(..), Projection, Step
 import Hylograph.Flow.Laws as Flow.Laws
 import Hylograph.Flow.Render.Laws (acyclic, faults, layoutFaults, varied)
 import Hylograph.Flow.Render.Layout (Course(..), Metrics, Widths(..), defaultMetrics, layout)
+import Hylograph.Flow.Render.Route (Route(..))
+import Hylograph.Flow.Render.Tree (strokeOf)
 import Test.Render.Fixtures (chain, drawings, expect, expectNone, long, quantity, sankeyMetrics, scan, subjects, unconnected, weighted)
+import Test.Render.Engines as Engines
 import Test.Render.Example as Example
+import Test.Render.Groups as Groups
+import Test.Render.Measures as Measures
 import Test.Render.Tree as Tree
 
 held :: String -> Metrics -> Widths Number -> Projection Number -> Effect Unit
@@ -26,6 +31,12 @@ held name metrics widths p = do
   let laid = layout metrics widths p
   expectNone (name <> ": " <> show (Array.length p.nodes) <> " nodes, " <> show (Array.length p.edges) <> " edges, " <> show laid.width <> " by " <> show laid.height)
     (faults metrics widths p laid)
+
+-- | A ribbon's breadth; nothing for a route that is no ribbon.
+breadthOf :: Route -> Number
+breadthOf = case _ of
+  Ribbon ribbon -> ribbon.breadth
+  _ -> 0.0
 
 main :: Effect Unit
 main = do
@@ -60,8 +71,8 @@ main = do
   let at label = Array.find (\n -> n.node.label == label) drawn.nodes
   let height label = (_.box.height) <$> at label
   let nearly a b = abs (a - b) < 1.0e-6
-  let strokesInto key = sum (map _.stroke (Array.filter (\e -> e.edge.to == key) drawn.edges))
-  let strokesOutOf key = sum (map _.stroke (Array.filter (\e -> e.edge.from == key) drawn.edges))
+  let strokesInto key = sum (map (strokeOf <<< _.route) (Array.filter (\e -> e.edge.to == key) drawn.edges))
+  let strokesOutOf key = sum (map (strokeOf <<< _.route) (Array.filter (\e -> e.edge.from == key) drawn.edges))
   expect "by quantity: the join is 10 units tall (7 + 3 in, 10 out), at 7 pixels to the unit"
     (map (nearly (10.0 * 7.0)) (height "join") == Just true)
   expect "by quantity: the strokes drawn into the join sum to 7 + 3 units, out of it to 10"
@@ -70,14 +81,17 @@ main = do
     (map (nearly 70.0) (height "power") == Just true && nearly (strokesOutOf (ItemKey (ItemId "power"))) 70.0)
   let plainDrawn = layout defaultMetrics Plain energy
   expect "plain: the same picture has every edge a hairline, and the join two units tall"
-    (Array.all (\e -> e.stroke == defaultMetrics.hairline) plainDrawn.edges
+    (Array.all (\e -> strokeOf e.route == defaultMetrics.hairline) plainDrawn.edges
       && map (\n -> nearly n.box.height (2.0 * defaultMetrics.unit)) (Array.find (\n -> n.node.label == "join") plainDrawn.nodes) == Just true)
   expect "a width that is not a positive number is drawn as nothing, and the layout is still lawful"
     (Array.null (faults sankeyMetrics (Sankey \_ -> toNumber 0) energy (layout sankeyMetrics (Sankey \_ -> toNumber 0) energy)))
   expect "layoutFaults is the faults of the layout this package makes"
     (layoutFaults sankeyMetrics quantity energy == faults sankeyMetrics quantity energy drawn)
   expect "the varied widths do vary: the weighted flow under Holders has edges of more than one width"
-    (Array.length (Array.nub (map _.width (layout sankeyMetrics varied (project Holders weighted)).edges)) > 1)
+    (Array.length (Array.nub (map (breadthOf <<< _.route) (layout sankeyMetrics varied (project Holders weighted)).edges)) > 1)
   Tree.suite
+  Groups.suite
+  Engines.suite
+  Measures.suite
   Example.suite
   log "render: all green"

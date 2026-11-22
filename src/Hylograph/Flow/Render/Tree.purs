@@ -1,9 +1,24 @@
 -- | A layout as a HATS tree: one SVG, edges under nodes.
 -- |
+-- | The tree draws a `Layout` (`Hylograph.Flow.Render.Engine`) and does not
+-- | know which engine made it: every engine's layout is drawn by this one
+-- | function.
+-- |
 -- | An item (what holds a value) is an open box; a step (what computes) is
--- | a filled lozenge. An edge is one stroked path, as wide as the layout
--- | says: a hairline in a plain picture, a band in a Sankey; an edge turned
--- | back to close a cycle is dashed where it is a hairline.
+-- | a filled lozenge. An edge is one stroked path along its route
+-- | (`Route.svgPath`): a ribbon as its ink says (a band as broad as it is,
+-- | or a hairline down its middle), a polyline or a spline as a hairline; an
+-- | edge turned back to close a cycle is dashed where it is a hairline. A
+-- | port the engine placed is a small square on its node's side, open for
+-- | an input and filled for an output, over the edges, so that an edge's
+-- | end is seen to meet it.
+-- |
+-- | The layout's direction is the root's `data-direction`. A node's words
+-- | are set from its left side where the flow runs left to right (its
+-- | edges enter and leave by its ends, and the words read along it), and
+-- | about its middle where the flow runs top-down (its edges enter and
+-- | leave above and below its middle); an item's swatch is along the side
+-- | the flow enters by.
 -- |
 -- | Everything else about an element is the caller's: its label, a short
 -- | note beside the label, a class and a colour (`Decoration`), and
@@ -15,13 +30,30 @@
 -- | item are. Whether it should look otherwise is the caller's to say too:
 -- | `withGroups` changes the marks of a group's step and summary, by group.
 -- |
+-- | An open group, where the layout was told of groups, is an outline under
+-- | everything else: a quiet box round its members with its name in a strip
+-- | at the top. The name is what takes gestures (a tab behind it, as wide
+-- | as the name), told as `PointedGroup`, so a page can shut a group by a
+-- | click on its name; the box itself takes none, and what is inside it is
+-- | reached through it.
+-- |
+-- | Words: where the layout set a node's words (`Picture.words`), those
+-- | lines are drawn, the title's and then the detail's, and the mark's
+-- | `label` is not used; its `note` stands at the right of the first line.
+-- | Where it did not, the mark's `label` is written on one line, as in 0.2.
+-- |
 -- | What is drawn, for a stylesheet or a test to find:
 -- |
 -- | ```
--- | svg.flow
--- |   g.flow-edges > path.flow-edge[.flow-backward][data-edge][data-from][data-to]
--- |   g.flow-nodes > g.flow-node.flow-item|.flow-step[data-key]
--- |                    > rect.flow-box, rect.flow-swatch?, text.flow-label, text.flow-note?
+-- | svg.flow[data-direction=left-to-right|top-down]
+-- |   g.flow-outlines > g.flow-outline[data-group][data-depth]
+-- |                       > rect.flow-outline-box, rect.flow-outline-tab, text.flow-outline-label
+-- |   g.flow-edges > path.flow-edge.flow-ribbon|.flow-polyline|.flow-spline
+-- |                    .flow-band|.flow-hairline[.flow-backward][data-edge][data-from][data-to]
+-- |   g.flow-nodes > g.flow-node.flow-item|.flow-step[.flow-lettered][data-key]
+-- |                    > rect.flow-box, rect.flow-swatch?, text.flow-label,
+-- |                      text.flow-label-more*, text.flow-detail*, text.flow-note?,
+-- |                      rect.flow-port.flow-port-in|.flow-port-out[data-port]*
 -- | ```
 module Hylograph.Flow.Render.Tree
   ( Mark
@@ -35,6 +67,11 @@ module Hylograph.Flow.Render.Tree
   , groupOf
   , pointedBy
   , keyName
+  , groupName
+  , hairline
+  , strokeOf
+  , directionName
+  , portSide
   , tree
   ) where
 
@@ -42,12 +79,17 @@ import Prelude
 
 import Data.Array as Array
 import Data.Array.NonEmpty as NonEmptyArray
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Effect (Effect)
 import Hylograph.Flow (Edge, ElementKey(..), GroupId(..), ItemId(..), Node, StepId(..), WireId(..), itemLabel, portLabel, stepLabel)
+import Hylograph.Flow.Render.Engine (Course(..), Direction(..), Layout, PlacedEdge, PlacedNode, PlacedOutline, PlacedPort, portPoint)
+import Hylograph.Flow.Render.Engine as Engine
+import Hylograph.Flow.Render.Route (Ink(..), Route(..))
+import Hylograph.Flow.Render.Route as Route
 import Hylograph.Flow.Overlay (Overlay)
 import Hylograph.Flow.Overlay as Overlay
-import Hylograph.Flow.Render.Layout (Course(..), Layout, PlacedEdge, PlacedNode)
+import Data.Int (toNumber)
+import Hylograph.Flow.Render.Text (defaultLettering, estimateWidth, heavier, lineHeight)
 import Hylograph.HATS (ElementType(..), Tree, elem, forEach, onClick, onMouseEnter, onMouseLeave, staticStr, withBehaviors)
 import Hylograph.HATS.Friendly as Friendly
 
@@ -72,10 +114,11 @@ instance Show Gesture where
 -- | What a gesture was made on. A node is its element. An edge is a wire
 -- | where it is exactly one (`Both`, and any edge between a drawn item and
 -- | a drawn step); otherwise it is the path it stands for, with the undrawn
--- | elements it passes through.
+-- | elements it passes through. An open group's outline is its group.
 data Pointed
   = PointedElement ElementKey
   | PointedPath { from :: ElementKey, to :: ElementKey, via :: Array ElementKey }
+  | PointedGroup GroupId
 
 derive instance Eq Pointed
 
@@ -83,6 +126,7 @@ instance Show Pointed where
   show = case _ of
     PointedElement key -> "(PointedElement " <> show key <> ")"
     PointedPath p -> "(PointedPath " <> show p.from <> " " <> show p.via <> " " <> show p.to <> ")"
+    PointedGroup group -> "(PointedGroup " <> show group <> ")"
 
 type Decoration wire =
   { node :: Node -> Mark
@@ -151,21 +195,56 @@ keyName = case _ of
   WireKey (Reads item step port) -> "reads:" <> itemLabel item <> ">" <> stepLabel step <> "." <> portLabel port
   WireKey (Writes step port item) -> "writes:" <> stepLabel step <> "." <> portLabel port <> ">" <> itemLabel item
 
+-- | A group's id as one string, for an outline's `data-group`.
+groupName :: GroupId -> String
+groupName (GroupId group) = group
+
 ink :: String
 ink = "#161616"
 
+quiet :: String
+quiet = "#8a8a8a"
+
 paper :: String
 paper = "#ffffff"
+
+-- | The stroke of an edge that is drawn as a line and whose route says no
+-- | stroke of its own: a polyline, a spline.
+hairline :: Number
+hairline = 1.25
+
+-- | How wide an edge is stroked: a ribbon as its ink says, any other route
+-- | as a `hairline`.
+strokeOf :: Route -> Number
+strokeOf = case _ of
+  Ribbon ribbon -> case ribbon.ink of
+    Band -> ribbon.breadth
+    Hairline stroke -> stroke
+  Polyline _ -> hairline
+  Spline _ -> hairline
+
+-- | A direction as the root's `data-direction` says it.
+directionName :: Direction -> String
+directionName = case _ of
+  LeftToRight -> "left-to-right"
+  TopDown -> "top-down"
+
+-- | The side of a port's mark: 5 pixels, centred on the port.
+portSide :: Number
+portSide = 5.0
 
 tree :: forall wire. Decoration wire -> Layout wire -> Tree
 tree decoration laid =
   elem SVG
     [ staticStr "class" "flow"
+    , staticStr "data-direction" (directionName laid.direction)
     , Friendly.viewBox (-2.0) (-2.0) (laid.width + 4.0) (laid.height + 4.0)
     , Friendly.width (laid.width + 4.0)
     , Friendly.height (laid.height + 4.0)
     ]
-    [ elem Group [ staticStr "class" "flow-edges" ]
+    [ elem Group [ staticStr "class" "flow-outlines" ]
+        [ forEach "flow-outlines" Group laid.outlines (groupName <<< _.group) outlineMark ]
+    , elem Group [ staticStr "class" "flow-edges" ]
         [ forEach "flow-edges" Path laid.edges (show <<< _.index) edgeMark ]
     , elem Group [ staticStr "class" "flow-nodes" ]
         [ forEach "flow-nodes" Group laid.nodes (\n -> show n.index <> " " <> keyName n.node.key) nodeMark ]
@@ -177,9 +256,67 @@ tree decoration laid =
     , onMouseLeave (decoration.notify Left pointed)
     ]
 
+  -- an open group: its box takes no gesture, its name does
+  outlineMark :: PlacedOutline -> Tree
+  outlineMark outline =
+    let
+      nameSize = 11.0
+      tabWidth = min outline.box.width (16.0 + heavier * estimateWidth nameSize outline.name)
+    in
+      withBehaviors (gestures (PointedGroup outline.group)) $
+        elem Group
+          [ staticStr "class" "flow-outline"
+          , staticStr "data-group" (groupName outline.group)
+          , staticStr "data-depth" (show outline.depth)
+          ]
+          [ elem Rect
+              [ staticStr "class" "flow-outline-box"
+              , Friendly.x outline.box.x
+              , Friendly.y outline.box.y
+              , Friendly.width outline.box.width
+              , Friendly.height outline.box.height
+              , staticStr "rx" "3"
+              , Friendly.fill "none"
+              , Friendly.stroke quiet
+              , Friendly.strokeWidth 1.0
+              , staticStr "pointer-events" "none"
+              ]
+              []
+          , elem Rect
+              [ staticStr "class" "flow-outline-tab"
+              , Friendly.x outline.box.x
+              , Friendly.y outline.box.y
+              , Friendly.width tabWidth
+              , Friendly.height outline.header
+              , Friendly.fill paper
+              , staticStr "fill-opacity" "0"
+              , staticStr "pointer-events" "all"
+              ]
+              []
+          , elem Text
+              [ staticStr "class" "flow-outline-label"
+              , Friendly.x (outline.box.x + 8.0)
+              , Friendly.y (outline.box.y + outline.header / 2.0 + 1.0)
+              , Friendly.textAnchor "start"
+              , staticStr "dominant-baseline" "central"
+              , Friendly.fontSize (show nameSize)
+              , Friendly.fontWeight "600"
+              , Friendly.fill quiet
+              , staticStr "pointer-events" "none"
+              , staticStr "textContent" outline.name
+              ]
+              []
+          ]
+
   -- a band lets what it crosses show through; a hairline is solid
   isBand :: PlacedEdge wire -> Boolean
-  isBand e = e.stroke > 3.0
+  isBand e = strokeOf e.route > 3.0
+
+  kindOf :: Route -> String
+  kindOf = case _ of
+    Ribbon _ -> "flow-ribbon"
+    Polyline _ -> "flow-polyline"
+    Spline _ -> "flow-spline"
 
   edgeMark :: PlacedEdge wire -> Tree
   edgeMark e =
@@ -189,14 +326,14 @@ tree decoration laid =
     in
       withBehaviors (gestures (pointedBy e.edge)) $
         elem Path
-          ( [ staticStr "class" (classes [ "flow-edge", if backward then "flow-backward" else "", if isBand e then "flow-band" else "flow-hairline", line.className ])
+          ( [ staticStr "class" (classes [ "flow-edge", kindOf e.route, if backward then "flow-backward" else "", if isBand e then "flow-band" else "flow-hairline", line.className ])
             , staticStr "data-edge" (show e.index)
             , staticStr "data-from" (keyName e.edge.from)
             , staticStr "data-to" (keyName e.edge.to)
-            , Friendly.d e.path
+            , Friendly.d (Route.svgPath e.route)
             , Friendly.fill "none"
             , Friendly.stroke (fromMaybe ink line.colour)
-            , Friendly.strokeWidth e.stroke
+            , Friendly.strokeWidth (strokeOf e.route)
             , Friendly.strokeOpacity (if isBand e then "0.22" else "1")
             ]
               <> (if backward && not (isBand e) then [ staticStr "stroke-dasharray" "5 4" ] else [])
@@ -211,12 +348,16 @@ tree decoration laid =
         StepKey _ -> true
         _ -> false
       middle = n.box.y + n.box.height / 2.0
+      -- where a line of words is set from, and how it is anchored there
+      setting = case laid.direction of
+        LeftToRight -> { anchor: "start", x: \inset -> n.box.x + inset }
+        TopDown -> { anchor: "middle", x: \_ -> n.box.x + n.box.width / 2.0 }
       lettering = if isStep then paper else ink
-      text className anchor x size weight content =
+      text className anchor x y size weight content =
         elem Text
           [ staticStr "class" className
           , Friendly.x x
-          , Friendly.y middle
+          , Friendly.y y
           , Friendly.textAnchor anchor
           , staticStr "dominant-baseline" "central"
           , Friendly.fontSize size
@@ -226,6 +367,25 @@ tree decoration laid =
           , staticStr "textContent" content
           ]
           []
+      -- words the layout set: the lines one under another, the block of
+      -- them in the middle of the box (at the layout's default sizes: the
+      -- tree is not told another lettering)
+      titleLine = lineHeight defaultLettering defaultLettering.titleSize
+      detailLine = lineHeight defaultLettering defaultLettering.detailSize
+      written = case n.words of
+        Nothing -> { lines: [ text "flow-label" setting.anchor (setting.x 13.0) middle "12" "600" mark.label ], first: middle }
+        Just set ->
+          let
+            block = toNumber (Array.length set.title) * titleLine + toNumber (Array.length set.detail) * detailLine
+            blockTop = middle - block / 2.0
+            titleAt i = blockTop + (toNumber i + 0.5) * titleLine
+            detailAt i = blockTop + toNumber (Array.length set.title) * titleLine + (toNumber i + 0.5) * detailLine
+          in
+            { lines:
+                Array.mapWithIndex (\i line -> text (if i == 0 then "flow-label" else "flow-label-more") setting.anchor (setting.x defaultLettering.inset) (titleAt i) (show defaultLettering.titleSize) "600" line) set.title
+                  <> Array.mapWithIndex (\i line -> text "flow-detail" setting.anchor (setting.x defaultLettering.inset) (detailAt i) (show defaultLettering.detailSize) "400" line) set.detail
+            , first: titleAt 0
+            }
       box =
         elem Rect
           ( [ staticStr "class" "flow-box"
@@ -246,8 +406,12 @@ tree decoration laid =
               [ staticStr "class" "flow-swatch"
               , Friendly.x n.box.x
               , Friendly.y n.box.y
-              , Friendly.width 5.0
-              , Friendly.height n.box.height
+              , Friendly.width (case laid.direction of
+                  LeftToRight -> 5.0
+                  TopDown -> n.box.width)
+              , Friendly.height (case laid.direction of
+                  LeftToRight -> n.box.height
+                  TopDown -> 5.0)
               , Friendly.fill colour
               , staticStr "pointer-events" "none"
               ]
@@ -255,14 +419,37 @@ tree decoration laid =
           ]
         _ -> []
       note = case mark.note of
-        Just words -> [ text "flow-note" "end" (n.box.x + n.box.width - 10.0) "9" "500" words ]
+        Just words -> [ text "flow-note" "end" (n.box.x + n.box.width - 10.0) written.first "9" "500" words ]
         Nothing -> []
     in
       withBehaviors (gestures (PointedElement n.node.key)) $
         elem Group
-          [ staticStr "class" (classes [ "flow-node", if isStep then "flow-step" else "flow-item", mark.className ])
+          [ staticStr "class" (classes [ "flow-node", if isStep then "flow-step" else "flow-item", if isJust n.words then "flow-lettered" else "", mark.className ])
           , staticStr "data-key" (keyName n.node.key)
           ]
-          ([ box ] <> swatch <> [ text "flow-label" "start" (n.box.x + 13.0) "12" "600" mark.label ] <> note)
+          ([ box ] <> swatch <> written.lines <> note <> map portMark n.ports)
+      where
+      portMark :: PlacedPort -> Tree
+      portMark port =
+        let
+          point = portPoint n.box port
+        in
+          elem Rect
+            [ staticStr "class" case port.flow of
+                Engine.Input -> "flow-port flow-port-in"
+                Engine.Output -> "flow-port flow-port-out"
+            , staticStr "data-port" (portLabel port.name)
+            , Friendly.x (point.x - portSide / 2.0)
+            , Friendly.y (point.y - portSide / 2.0)
+            , Friendly.width portSide
+            , Friendly.height portSide
+            , Friendly.fill case port.flow of
+                Engine.Input -> paper
+                Engine.Output -> ink
+            , Friendly.stroke ink
+            , Friendly.strokeWidth 1.0
+            , staticStr "pointer-events" "none"
+            ]
+            []
 
   classes = Array.intercalate " " <<< Array.filter (_ /= "")
