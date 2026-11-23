@@ -6,6 +6,10 @@ module Test.Render.Example
   , draw
   , kitchen
   , outlined
+  , mixer
+  , fixedLayout
+  , drawnInside
+  , fixedPicture
   , suite
   ) where
 
@@ -16,14 +20,16 @@ import Data.Maybe (Maybe(..))
 import Data.Set as Set
 import Effect (Effect)
 import Effect.Console (log)
-import Hylograph.Flow (Drawing(..), Flow(..), GroupId(..), ItemId(..), PortName(..), StepId(..), WireId(..), plain, project)
+import Hylograph.Flow (Drawing(..), Flow(..), GroupId(..), ItemId(..), Node, PortName(..), StepId(..), WireId(..), plain, project)
 import Hylograph.Flow.Grouping (Grouping(..), collapse)
 import Hylograph.Flow.Render.Engine (Engine, Layout, Picture, plainPicture, run)
-import Hylograph.Flow.Render.Laws (layoutFaults, layoutFaultsOf)
+import Hylograph.Flow.Render.Laws (check, layoutFaults, layoutFaultsOf)
 import Hylograph.Flow.Render.Layout (layout)
 import Hylograph.Flow.Render.Sankey (Widths(..), defaultMetrics, sankey)
-import Hylograph.Flow.Render.Tree (plainDecoration, tree)
-import Hylograph.HATS (Tree)
+import Hylograph.Flow.Render.Columns (columns, defaultSpacing)
+import Hylograph.Flow.Render.Engine (FixedNode, PortFlow(..), Side(..))
+import Hylograph.Flow.Render.Tree (Decoration, plainDecoration, tree)
+import Hylograph.HATS (ElementType(Text), Tree, elem, staticStr)
 import Hylograph.HATS.InterpreterTick (rerender)
 import Test.Render.Fixtures (expect, expectNone)
 
@@ -76,6 +82,34 @@ narrow = sankey (defaultMetrics { nodeBreadth = 88.0 }) Plain
 outlined :: Layout Unit
 outlined = run narrow setting (project Both (collapse kitchen Set.empty bakery))
 
+-- The mixing step drawn by the caller: 160 by 60, its two inputs a third
+-- and two thirds down its left side, its output half way down its right.
+mixer :: Node -> Maybe FixedNode
+mixer node = case node.label of
+  "mix" -> Just
+    { width: 160.0
+    , height: 60.0
+    , ports:
+        [ { name: PortName "dry", flow: Input, side: LeftSide, along: 20.0 }
+        , { name: PortName "wet", flow: Input, side: LeftSide, along: 40.0 }
+        , { name: PortName "out", flow: Output, side: RightSide, along: 30.0 }
+        ]
+    }
+  _ -> Nothing
+
+-- The columns engine keeps that size and those ports; every edge is a
+-- ribbon one pixel to a unit, never less than two pixels.
+fixedLayout :: Layout Unit
+fixedLayout = run (columns defaultSpacing { pixelsPerUnit: 1.0, least: 2.0, unitsOf: const 1.0 }) (plainPicture { fixed = mixer }) (project Both bakery)
+
+-- What is inside the step is the caller's to draw, in its own coordinates.
+drawnInside :: Decoration Unit
+drawnInside = plainDecoration
+  { inside = \node -> if node.label == "mix" then Just (elem Text [ staticStr "x" "12", staticStr "y" "34", staticStr "textContent" "flour and water, mixed" ] []) else Nothing }
+
+fixedPicture :: Tree
+fixedPicture = tree drawnInside fixedLayout
+
 suite :: Effect Unit
 suite = do
   log "render: the README's example"
@@ -87,3 +121,7 @@ suite = do
         && Array.all (\node -> (map (\words -> Array.length words.title + Array.length words.detail >= 2) node.words) == Just true) outlined.nodes
     )
   expectNone "and that layout is lawful: the general laws, and the ones the engine promises" (layoutFaultsOf narrow setting (project Both (collapse kitchen Set.empty bakery)))
+  let mix = Array.find (\node -> node.node.label == "mix") fixedLayout.nodes
+  expect "the mixing step, fixed, is 160 by 60 with its three ports where they were fixed"
+    (map (\node -> { width: node.box.width, height: node.box.height, ports: Array.length node.ports }) mix == Just { width: 160.0, height: 60.0, ports: 3 })
+  expectNone "and the columns engine's layout of it is lawful" (map _.words (check (columns defaultSpacing { pixelsPerUnit: 1.0, least: 2.0, unitsOf: const 1.0 }) (plainPicture { fixed = mixer }) (project Both bakery) fixedLayout))

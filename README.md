@@ -28,6 +28,16 @@ caller's decoration; a dashed edge turns back to close a cycle.*
   is `sankey metrics widths`; it is designed to take two more, a port of
   ELK's layered algorithm (ports, right-angled routes) and a rewrite of
   Graphviz dot (clusters, splines, ranks), neither of which it depends on.
+  A second engine of its own, `columns spacing scaling` (0.4), is for
+  nodes the caller sizes and ports the caller places.
+- **A caller may fix a node, and draw its inside** (0.4). Tell the picture
+  a node's size and where its ports are (`Picture.fixed`), and an engine
+  that promises to keep them (`KeepsFixed`) does, with each route meeting
+  the port it names. Tell the decoration how to draw the node's inside
+  (`Decoration.inside`, a HATS tree in the node's own coordinates) and
+  the tree draws that in the node's place instead of a box and a label. A
+  table of rows is such a node: only the caller knows how tall it is, and
+  how far down its side each row stands.
 - **A layout says where everything is, as data.** Placed nodes with their
   boxes and the ports the engine placed (which port, which side, how far
   along it); placed edges with the wires each stands for and its *route*
@@ -89,13 +99,15 @@ import Prelude
 import Data.Maybe (Maybe(..))
 import Data.Set as Set
 import Effect (Effect)
-import Hylograph.Flow (Drawing(..), Flow(..), GroupId(..), ItemId(..), PortName(..), StepId(..), WireId(..), plain, project)
+import Hylograph.Flow (Drawing(..), Flow(..), GroupId(..), ItemId(..), Node, PortName(..), StepId(..), WireId(..), plain, project)
 import Hylograph.Flow.Grouping (Grouping(..), collapse)
 import Hylograph.Flow.Render.Engine (Engine, Layout, Picture, plainPicture, run)
 import Hylograph.Flow.Render.Layout (layout)
 import Hylograph.Flow.Render.Sankey (Widths(..), defaultMetrics, sankey)
-import Hylograph.Flow.Render.Tree (plainDecoration, tree)
-import Hylograph.HATS (Tree)
+import Hylograph.Flow.Render.Columns (columns, defaultSpacing)
+import Hylograph.Flow.Render.Engine (FixedNode, PortFlow(..), Side(..))
+import Hylograph.Flow.Render.Tree (Decoration, plainDecoration, tree)
+import Hylograph.HATS (ElementType(Text), Tree, elem, staticStr)
 import Hylograph.HATS.InterpreterTick (rerender)
 
 -- Flour and water are mixed into dough.
@@ -146,6 +158,34 @@ narrow = sankey (defaultMetrics { nodeBreadth = 88.0 }) Plain
 -- decoration's `notify` as `PointedGroup (GroupId "kitchen")`.
 outlined :: Layout Unit
 outlined = run narrow setting (project Both (collapse kitchen Set.empty bakery))
+
+-- The mixing step drawn by the caller: 160 by 60, its two inputs a third
+-- and two thirds down its left side, its output half way down its right.
+mixer :: Node -> Maybe FixedNode
+mixer node = case node.label of
+  "mix" -> Just
+    { width: 160.0
+    , height: 60.0
+    , ports:
+        [ { name: PortName "dry", flow: Input, side: LeftSide, along: 20.0 }
+        , { name: PortName "wet", flow: Input, side: LeftSide, along: 40.0 }
+        , { name: PortName "out", flow: Output, side: RightSide, along: 30.0 }
+        ]
+    }
+  _ -> Nothing
+
+-- The columns engine keeps that size and those ports; every edge is a
+-- ribbon one pixel to a unit, never less than two pixels.
+fixedLayout :: Layout Unit
+fixedLayout = run (columns defaultSpacing { pixelsPerUnit: 1.0, least: 2.0, unitsOf: const 1.0 }) (plainPicture { fixed = mixer }) (project Both bakery)
+
+-- What is inside the step is the caller's to draw, in its own coordinates.
+drawnInside :: Decoration Unit
+drawnInside = plainDecoration
+  { inside = \node -> if node.label == "mix" then Just (elem Text [ staticStr "x" "12", staticStr "y" "34", staticStr "textContent" "flour and water, mixed" ] []) else Nothing }
+
+fixedPicture :: Tree
+fixedPicture = tree drawnInside fixedLayout
 ```
 
 This example is compiled and checked with the tests
@@ -179,22 +219,27 @@ An engine is `Engine { name, promises, layout }`, where `layout :: Picture
   every other, with no stranger in it.
 
 It then promises what more it keeps, from `Promise`: `FlowsForward`,
-`LayersAligned`, `RoutesOrthogonal`, `WidthsConserved`. `Laws.check engine
+`LayersAligned`, `RoutesOrthogonal`, `WidthsConserved`, and since 0.4
+`KeepsFixed` (the sizes and ports the picture fixes) and `WidthsScaled`
+(every route a ribbon as broad as its units at a scale, never less than a
+least breadth). `Laws.check engine
 picture projection layout` is the general laws and exactly those. The
 test suite's `Test.Render.Engines` has an engine made by hand, and twelve
-wrong ones, each breaking one law.
+wrong ones, each breaking one law; `Test.Render.Columns` has two more,
+each breaking one of the laws 0.4 added.
 
 ## The modules
 
 | Module | What it holds |
 |---|---|
-| `Hylograph.Flow.Render.Engine` | What any engine makes: `Layout`, `PlacedNode` (with `ports :: Array PlacedPort`), `PlacedEdge` (with `route`), `PlacedOutline`, `Direction`, `Side`, `PortFlow`, `portPoint`. What every engine is told: `Picture`, `plainPicture`, `Groups`, `openPaths`. An engine as a value: `Engine`, `Promise`, `run`. Its header gives the reason for each decision. |
+| `Hylograph.Flow.Render.Engine` | What any engine makes: `Layout`, `PlacedNode` (with `ports :: Array PlacedPort`), `PlacedEdge` (with `route`), `PlacedOutline`, `Direction`, `Side`, `PortFlow`, `portPoint`. What every engine is told: `Picture` (with `fixed :: Node -> Maybe FixedNode`), `plainPicture`, `FixedNode`, `Groups`, `openPaths`. An engine as a value: `Engine`, `Promise`, `run`; `Scaling` and `scaledBreadth` for `WidthsScaled`. Its header gives the reason for each decision. |
+| `Hylograph.Flow.Render.Columns` | The columns engine (0.4): `columns :: Spacing -> Scaling wire -> Engine wire`, `Spacing`, `defaultSpacing`. Nodes sized by the picture, in a column for each layer; ribbons from port to port at one scale. Promises `FlowsForward`, `LayersAligned`, `KeepsFixed`, `WidthsScaled`; draws no outlines. Its header says why it is an engine of its own and not the Sankey engine taught ports. |
 | `Hylograph.Flow.Render.Route` | `Route = Ribbon … \| Polyline … \| Spline …`, and what is read from one: `start`, `end`, `svgPath`, `flatten`, `length`, `bends`. |
 | `Hylograph.Flow.Render.Sankey` | The Sankey engine: `sankey :: Metrics -> Widths wire -> Engine wire`, with `Metrics`, `Widths`, `defaultMetrics`, `widthOf` as its own configuration. Pure, so it runs anywhere, without a DOM. Its header says how a group's members are kept together and what `hylograph-layout` does not offer for it. |
 | `Hylograph.Flow.Render.Layout` | 0.2's door: `layout :: Metrics -> Widths wire -> Projection wire -> Layout wire`, and the names 0.2 imported from here, re-exported. |
 | `Hylograph.Flow.Render.Text` | `estimateWidth`, `wrap`, `setWords`, `Lettering`: text set without measuring it. |
-| `Hylograph.Flow.Render.Tree` | `tree :: Decoration wire -> Layout wire -> Tree`, of any engine's layout. Items as open boxes, steps as filled lozenges, placed ports as small squares, open groups as outlines. `plainDecoration`, `withOverlay`, `withGroups`, `groupOf`, `keyName`, `groupName`, `strokeOf`. |
-| `Hylograph.Flow.Render.Laws` | `check`, `generalFaults`, `promiseFaults`, `Law`, `broken`; `faultsOf`, `layoutFaultsOf` in words alone; `faults`, `layoutFaults` as in 0.2 (the Sankey engine's). `strangers`: the nodes in an outline that is not theirs (the law is that there are none). |
+| `Hylograph.Flow.Render.Tree` | `tree :: Decoration wire -> Layout wire -> Tree`, of any engine's layout. Items as open boxes, steps as filled lozenges, placed ports as small squares, open groups as outlines; a node whose inside the decoration draws (`inside`), as that. `plainDecoration`, `withOverlay`, `withGroups`, `groupOf`, `keyName`, `groupName`, `strokeOf`. |
+| `Hylograph.Flow.Render.Laws` | `check`, `generalFaults`, `promiseFaults`, `Law` (with `FixedKept` and `Scaled` since 0.4), `broken`; `faultsOf`, `layoutFaultsOf` in words alone; `faults`, `layoutFaults` as in 0.2 (the Sankey engine's). `strangers`: the nodes in an outline that is not theirs (the law is that there are none). |
 | `Hylograph.Flow.Render.Measures` | `scoreOf`, `drawnOf`, and each measure by name: `crossings`, `edgeLength`, `bends`, `extent`, `area`, `aspect`, `nodeOverlaps`, `edgesThroughNodes`, `outlineTrespasses`, `strangersIn`, `unplaced`. |
 
 What is drawn, for a stylesheet or a test to find:
@@ -209,7 +254,59 @@ svg.flow[data-direction=left-to-right|top-down]
                    > rect.flow-box, rect.flow-swatch?, text.flow-label,
                      text.flow-label-more*, text.flow-detail*, text.flow-note?,
                      rect.flow-port.flow-port-in|.flow-port-out[data-port]*
+                 | g.flow-node.flow-drawn[data-key]
+                   > g.flow-inside[transform] > (the caller's),
+                     rect.flow-port.flow-port-in|.flow-port-out[data-port]*
 ```
+
+## Changes in 0.4.0
+
+Added, for a node the caller sizes and draws (a table of rows, whose
+height and whose rows' places only the caller knows):
+
+- **`Picture.fixed :: Node -> Maybe FixedNode`**, where `FixedNode =
+  { width, height, ports :: Array PlacedPort }`: a node's size and its
+  ports' places, fixed by the caller. `plainPicture` fixes nothing.
+- **Two promises and their laws.** `KeepsFixed` (law `FixedKept`): every
+  fixed node has the size and exactly the ports it was given; that each
+  route meets its port was already the general law `Routed`. `WidthsScaled
+  scaling` (law `Scaled`): every route is a ribbon as broad as its units
+  at `scaling.pixelsPerUnit`, and never less than `scaling.least`
+  (`scaledBreadth`). Unlike `WidthsConserved` it says nothing of how tall
+  a node is, which an engine that keeps the caller's sizes cannot promise
+  (a table of 240 rows gives one total). Neither is a general law: the
+  Sankey engine's sizes are its widths, and it is not asked to keep a fix.
+- **The columns engine** (`Hylograph.Flow.Render.Columns`): `columns
+  spacing scaling`. Layers by longest path, with a node nothing enters
+  moved to the layer before the first it feeds; a column for each layer,
+  each node centred in it; nodes pulled down the page towards the ports
+  at the other ends of their edges; one cubic ribbon for each edge, from
+  port to port where the node has the port placed. It promises
+  `FlowsForward`, `LayersAligned`, `KeepsFixed` and `WidthsScaled`. It
+  draws no outlines: told of open groups, it breaks the general law
+  `Outlined`, and its tests say so.
+- **`Decoration.inside :: Node -> Maybe Tree`**: a node's inside, drawn by
+  the caller in the node's own coordinates. The tree draws it in a
+  `g.flow-inside` moved to the node's box, with the node's port squares,
+  and no box, label, words, swatch or note of its own; the node's mark has
+  the class `flow-drawn`.
+
+Strands: several strands between two nodes (a feed split by a mark) are
+several edges, each through an item of its own, each meeting a port of
+its own. One edge drawn as bands was the other way, and was not taken: an
+edge is one path of wires, so its parts would have had no wires of their
+own, and the laws and measures would have counted one route where the
+picture shows several.
+
+Breaking, against 0.3.1:
+
+- **`Picture` has a field `fixed`, and `Decoration` a field `inside`.**
+  Code that builds either from `plainPicture` or `plainDecoration` with a
+  record update is unaffected; code that writes one out as a whole record
+  must add `fixed: const Nothing` or `inside: const Nothing`.
+- **`Promise` has the constructors `KeepsFixed` and `WidthsScaled`, and
+  `Law` the constructors `FixedKept` and `Scaled`**, so a `case` over either
+  without a wildcard needs branches for them.
 
 ## Changes in 0.3.1
 
@@ -292,7 +389,11 @@ group, a group whose members are layers apart, a group of one, a group
 with members no edge touches, an open group over a closed one), with and
 without words. It makes a second engine by hand (ports, right angles, no
 widths) and twelve wrong ones, and checks that each wrong engine breaks
-exactly the law it was made to break. It holds the measures and the
+exactly the law it was made to break. It holds the columns engine (0.4)
+to the general laws and its four promises on the same flows, with no node
+fixed and with every node fixed; to widths and ports worked out by hand;
+and makes two wrong columns engines, each breaking one of `FixedKept` and
+`Scaled` and nothing else. It holds the measures and the
 routes to figures worked out by hand (two edges that cross count one
 crossing; an L has one bend and its two legs' length; a route's SVG path
 is the string written down). And it reads the HATS tree back, checking
