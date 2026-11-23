@@ -37,6 +37,15 @@
 -- | click on its name; the box itself takes none, and what is inside it is
 -- | reached through it.
 -- |
+-- | A node's inside (0.4): where the decoration draws a node's inside
+-- | (`Decoration.inside`), the tree draws nothing of the node but that and
+-- | its ports: no box, no label, no words, no swatch, no note. The inside
+-- | is a HATS tree in the node's own coordinates, its box's top left at
+-- | 0,0, placed by a `g.flow-inside` translated to the box. It is for a node
+-- | the caller sized (`Picture.fixed`), such as a table of rows, whose
+-- | inside only the caller knows how to draw; the tree still places it,
+-- | keys it, and tells its gestures.
+-- |
 -- | Words: where the layout set a node's words (`Picture.words`), those
 -- | lines are drawn, the title's and then the detail's, and the mark's
 -- | `label` is not used; its `note` stands at the right of the first line.
@@ -53,6 +62,8 @@
 -- |   g.flow-nodes > g.flow-node.flow-item|.flow-step[.flow-lettered][data-key]
 -- |                    > rect.flow-box, rect.flow-swatch?, text.flow-label,
 -- |                      text.flow-label-more*, text.flow-detail*, text.flow-note?,
+-- |                      rect.flow-port.flow-port-in|.flow-port-out[data-port]*
+-- |                  | g.flow-node.flow-drawn > g.flow-inside[transform] > (the caller's),
 -- |                      rect.flow-port.flow-port-in|.flow-port-out[data-port]*
 -- | ```
 module Hylograph.Flow.Render.Tree
@@ -128,18 +139,23 @@ instance Show Pointed where
     PointedPath p -> "(PointedPath " <> show p.from <> " " <> show p.via <> " " <> show p.to <> ")"
     PointedGroup group -> "(PointedGroup " <> show group <> ")"
 
+-- | `inside` (0.4): a node's inside, drawn by the caller in the node's own
+-- | coordinates, for the nodes it draws; see the module's header.
 type Decoration wire =
   { node :: Node -> Mark
   , edge :: Edge wire -> Line
   , notify :: Gesture -> Pointed -> Effect Unit
+  , inside :: Node -> Maybe Tree
   }
 
--- | Each node under its own label, nothing else said, gestures ignored.
+-- | Each node under its own label, nothing else said, gestures ignored, no
+-- | inside drawn by the caller.
 plainDecoration :: forall wire. Decoration wire
 plainDecoration =
   { node: \node -> { label: node.label, note: Nothing, className: "", colour: Nothing }
   , edge: \_ -> { className: "", colour: Nothing }
   , notify: \_ _ -> pure unit
+  , inside: const Nothing
   }
 
 -- | A decoration changed by what an overlay knows: of a node, by its key;
@@ -421,13 +437,19 @@ tree decoration laid =
       note = case mark.note of
         Just words -> [ text "flow-note" "end" (n.box.x + n.box.width - 10.0) written.first "9" "500" words ]
         Nothing -> []
+      drawn = case decoration.inside n.node of
+        Just inside ->
+          { drawnClass: "flow-drawn"
+          , parts: [ elem Group [ staticStr "class" "flow-inside", staticStr "transform" ("translate(" <> show n.box.x <> "," <> show n.box.y <> ")") ] [ inside ] ]
+          }
+        Nothing -> { drawnClass: "", parts: [ box ] <> swatch <> written.lines <> note }
     in
       withBehaviors (gestures (PointedElement n.node.key)) $
         elem Group
-          [ staticStr "class" (classes [ "flow-node", if isStep then "flow-step" else "flow-item", if isJust n.words then "flow-lettered" else "", mark.className ])
+          [ staticStr "class" (classes [ "flow-node", if isStep then "flow-step" else "flow-item", if isJust n.words then "flow-lettered" else "", drawn.drawnClass, mark.className ])
           , staticStr "data-key" (keyName n.node.key)
           ]
-          ([ box ] <> swatch <> written.lines <> note <> map portMark n.ports)
+          (drawn.parts <> map portMark n.ports)
       where
       portMark :: PlacedPort -> Tree
       portMark port =

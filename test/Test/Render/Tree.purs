@@ -222,6 +222,7 @@ dressed notify =
       , colour: if edge.from == addStep then Just "#00aa00" else Nothing
       }
   , notify
+  , inside: const Nothing
   }
 
 quiet :: Gesture -> Pointed -> Effect Unit
