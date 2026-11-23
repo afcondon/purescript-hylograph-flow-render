@@ -57,6 +57,18 @@
 -- |   general laws of every layout and, of an engine's layout, exactly the
 -- |   laws it promises: an engine that does not conserve widths is not
 -- |   asked to, so nothing has to be suppressed.
+-- | - **A caller may fix a node** (`Picture.fixed`, since 0.4): its size,
+-- |   and where its ports are. Until 0.4 an engine sized every node itself
+-- |   (from its words, or from what its edges carry), which is right for a
+-- |   box and a name and wrong for a node whose inside the caller draws
+-- |   (a table of rows: only the caller knows how tall it is, and how far
+-- |   down its side each row stands). A fixed node is a size and placed
+-- |   ports, the same `PlacedPort` an engine makes, so the general law that
+-- |   a route meets a placed port needs nothing new to hold the engine to
+-- |   the caller's places. Keeping the fix is a promise (`KeepsFixed`) and
+-- |   not a general law: an engine whose node sizes are its whole method
+-- |   (the Sankey layout's, which are the widths) cannot keep it, and is
+-- |   not asked to.
 module Hylograph.Flow.Render.Engine
   ( Box
   , Direction(..)
@@ -72,10 +84,13 @@ module Hylograph.Flow.Render.Engine
   , Groups
   , OutlineMetrics
   , defaultOutline
+  , FixedNode
   , Picture
   , plainPicture
   , openPaths
   , Conservation
+  , Scaling
+  , scaledBreadth
   , Promise(..)
   , Engine(..)
   , run
@@ -90,6 +105,7 @@ import Data.Array as Array
 import Data.Foldable (foldl)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Number (isFinite)
 import Data.Set (Set)
 import Data.Set as Set
 import Hylograph.Flow (Edge, ElementKey(..), GroupId(..), ItemId(..), Node, PortName, Projection, StepId(..))
@@ -222,21 +238,30 @@ type OutlineMetrics = { padding :: Number, header :: Number }
 defaultOutline :: OutlineMetrics
 defaultOutline = { padding: 8.0, header: 18.0 }
 
+-- | What a caller fixes of a node: how big its box is, and where its ports
+-- | are (each on a side of that box, as an engine would place it). A port
+-- | not listed is left to the engine; a node fixed with no ports has its
+-- | size fixed and nothing else.
+type FixedNode = { width :: Number, height :: Number, ports :: Array PlacedPort }
+
 -- | What every engine is told beside the projection. `words`: what is
 -- | written in each node, for the engine to wrap to the breadth it gives
 -- | the node and make room for; `Nothing` leaves every node as tall as the
 -- | engine makes it and its label to the tree, on one line. `groups`: the
--- | open groups to outline; `Nothing` for none.
+-- | open groups to outline; `Nothing` for none. `fixed`: the nodes whose
+-- | size and ports the caller fixes, for an engine that promises to keep
+-- | them (`KeepsFixed`); `const Nothing` fixes none.
 type Picture =
   { words :: Maybe (Node -> Words)
   , lettering :: Lettering
   , groups :: Maybe Groups
   , outline :: OutlineMetrics
+  , fixed :: Node -> Maybe FixedNode
   }
 
--- | No words set and no group outlined.
+-- | No words set, no group outlined, no node fixed.
 plainPicture :: Picture
-plainPicture = { words: Nothing, lettering: defaultLettering, groups: Nothing, outline: defaultOutline }
+plainPicture = { words: Nothing, lettering: defaultLettering, groups: Nothing, outline: defaultOutline, fixed: const Nothing }
 
 -- | The open groups a drawn element is in, outermost first, and every
 -- | group's name. A step is where `Member` puts it and an item where
@@ -280,6 +305,17 @@ openPaths groups =
 -- | to one unit of width, and an edge's width in units.
 type Conservation wire = { pixelsPerUnit :: Number, unitsOf :: Edge wire -> Number }
 
+-- | What the law of scaled widths needs: the pixels to one unit of width,
+-- | the least breadth a ribbon is drawn at (so that one unit still shows),
+-- | and an edge's width in units.
+type Scaling wire = { pixelsPerUnit :: Number, least :: Number, unitsOf :: Edge wire -> Number }
+
+-- | How broad a ribbon of so many units is at a scaling: its units at the
+-- | scale, and never less than the least. Units that are not a positive
+-- | number are none, and drawn at the least.
+scaledBreadth :: forall wire. Scaling wire -> Number -> Number
+scaledBreadth scaling units = max scaling.least (scaling.pixelsPerUnit * (if isFinite units && units > 0.0 then units else 0.0))
+
 -- | A law that holds of some engines' layouts and not of every layout; an
 -- | engine lists the ones it keeps. What each says exactly is in
 -- | `Hylograph.Flow.Render.Laws`.
@@ -292,11 +328,20 @@ type Conservation wire = { pixelsPerUnit :: Number, unitsOf :: Edge wire -> Numb
 -- | - `WidthsConserved`: every route is a ribbon as broad as its quantity
 -- |   says, and at each node the ribbons of a side stand in the node, beside
 -- |   one another, and the node is as tall as the broader side.
+-- | - `KeepsFixed` (0.4): every node the picture fixes has the size it was
+-- |   given and exactly the ports it was given, where it was given them.
+-- | - `WidthsScaled` (0.4): every route is a ribbon as broad as its units
+-- |   at the scale, or the least breadth where that is more. Nothing is
+-- |   said of the node: an engine that keeps the caller's sizes cannot also
+-- |   make a node as tall as what passes through it (a table of 240 rows
+-- |   gives one value: 240 units in, one out).
 data Promise wire
   = FlowsForward
   | LayersAligned
   | RoutesOrthogonal
   | WidthsConserved (Conservation wire)
+  | KeepsFixed
+  | WidthsScaled (Scaling wire)
 
 -- | A layout engine: what it is called, what it promises of every layout it
 -- | makes, and the making.

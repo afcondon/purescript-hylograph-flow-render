@@ -55,6 +55,17 @@
 -- |   a node stand inside the node and beside one another; and the node is
 -- |   as tall as the broader side, or as its words need where that is more.
 -- |   (Checked where every width is positive.)
+-- | - `FixedKept` (`KeepsFixed`, 0.4): every node the picture fixes has
+-- |   the width and height it was given, and its placed ports are exactly
+-- |   the ports it was given, each on the side and as far along it as it
+-- |   was given. (That a route meets each of them is the general law
+-- |   `Routed`, already.)
+-- | - `Scaled` (`WidthsScaled`, 0.4): every route is a ribbon whose breadth
+-- |   is its units at the promise's scale, or the promise's least breadth
+-- |   where that is more (`Engine.scaledBreadth`). Unlike `Conservation` it
+-- |   says nothing of how tall a node is, or of how ribbons stand at a
+-- |   node: the engines that promise it keep the caller's sizes and ports,
+-- |   and how ribbons stand at a port is then the caller's to arrange.
 -- |
 -- | `check engine picture projection layout` is the general laws and
 -- | exactly the engine's promises. A fault says which law it is of (`Law`,
@@ -96,7 +107,7 @@ import Data.Set as Set
 import Data.String as String
 import Data.Tuple (Tuple(..))
 import Hylograph.Flow (GroupId, Projection)
-import Hylograph.Flow.Render.Engine (Box, Conservation, Course(..), Direction(..), Engine, Layout, Picture, PlacedEdge, PlacedNode, PlacedOutline, PortFlow(..), Promise(..), Side(..), openPaths, plainPicture, portPoint, promises, run)
+import Hylograph.Flow.Render.Engine (Box, Conservation, Course(..), Direction(..), Engine, Layout, Picture, PlacedEdge, PlacedNode, PlacedOutline, PortFlow(..), Promise(..), Scaling, Side(..), openPaths, plainPicture, portPoint, promises, run, scaledBreadth)
 import Hylograph.Flow.Render.Route (Point, Route(..))
 import Hylograph.Flow.Render.Route as Route
 import Hylograph.Flow.Render.Sankey (Metrics, Widths(..), sankey)
@@ -116,6 +127,8 @@ data Law
   | LayerAlignment
   | Orthogonality
   | Conservation
+  | FixedKept
+  | Scaled
 
 derive instance Eq Law
 derive instance Ord Law
@@ -134,6 +147,8 @@ instance Show Law where
     LayerAlignment -> "LayerAlignment"
     Orthogonality -> "Orthogonality"
     Conservation -> "Conservation"
+    FixedKept -> "FixedKept"
+    Scaled -> "Scaled"
 
 -- | What is wrong, and which law it is against.
 type Fault = { law :: Law, words :: String }
@@ -152,6 +167,8 @@ lawOf = case _ of
   LayersAligned -> LayerAlignment
   RoutesOrthogonal -> Orthogonality
   WidthsConserved _ -> Conservation
+  KeepsFixed -> FixedKept
+  WidthsScaled _ -> Scaled
 
 -- | No path of edges returns to where it began (an edge from a node to
 -- | itself is such a path).
@@ -401,6 +418,8 @@ promiseFaults promise given projection laid = map (\words -> { law: lawOf promis
   LayersAligned -> aligned
   RoutesOrthogonal -> orthogonal
   WidthsConserved conservation -> conserved conservation
+  KeepsFixed -> kept
+  WidthsScaled scaling -> scaled scaling
   where
   -- how far along the flow, and across it, a point is
   along :: Point -> Number
@@ -456,6 +475,29 @@ promiseFaults promise given projection laid = map (\words -> { law: lawOf promis
       in
         if all identity (Array.zipWith square points (Array.drop 1 points)) then Nothing else Just (describeEdge e <> " has a leg that runs along neither axis")
     _ -> Just (describeEdge e <> " is not a polyline")
+
+  -- ---- what the caller fixed ----------------------------------------------------------
+  kept = laid.nodes # Array.concatMap \n -> case given.fixed n.node of
+    Nothing -> []
+    Just fixed ->
+      let
+        sameSize = near n.box.width fixed.width && near n.box.height fixed.height
+        portKey port = { name: show port.name, flow: show port.flow }
+        samePort a b = a.name == b.name && a.flow == b.flow && a.side == b.side && near a.along b.along
+        sameCount = Array.length n.ports == Array.length fixed.ports
+        everyGiven = all (\wanted -> any (samePort wanted) n.ports) fixed.ports
+      in
+        (if sameSize then [] else [ describe n <> " is " <> show n.box.width <> " by " <> show n.box.height <> ", and was fixed at " <> show fixed.width <> " by " <> show fixed.height ])
+          <> (if sameCount && everyGiven then [] else [ describe n <> " has its ports placed at " <> show (map portKey n.ports) <> ", not where they were fixed" ])
+
+  scaled :: Scaling wire -> Array String
+  scaled scaling = laid.edges # Array.mapMaybe \placed -> case placed.route of
+    Ribbon ribbon ->
+      let
+        wanted = scaledBreadth scaling (scaling.unitsOf placed.edge)
+      in
+        if near ribbon.breadth wanted then Nothing else Just (describeEdge placed <> " is " <> show ribbon.breadth <> " broad, its units at the scale say " <> show wanted)
+    _ -> Just (describeEdge placed <> " is not a ribbon")
 
   -- ---- widths ---------------------------------------------------------------------------
   conserved :: Conservation wire -> Array String
