@@ -58,6 +58,18 @@ fixing = plainPicture { fixed = fixedAll }
 joined :: Projection Number
 joined = project Both (flowOf [] [ { step: "join", reads: [ carrying 100.0 "coal", carrying 1.0 "gas" ], writes: [ carrying 101.0 "power" ] } ])
 
+-- | `long` reads `high` twenty pixels down its side and `low` four
+-- | thousand pixels down it.
+fed :: Projection Number
+fed = project Both (flowOf [] [ { step: "long", reads: [ carrying 1.0 "high", carrying 1.0 "low" ], writes: [] } ])
+
+-- | The step fixed 80 wide and 5,000 tall, its two inputs 20 and 4,000
+-- | pixels down its left side; the items as the engine sizes them.
+fixedTall :: Node -> Maybe FixedNode
+fixedTall node = case node.key of
+  StepKey _ -> Just { width: 80.0, height: 5000.0, ports: Array.zipWith (\name along -> { name, flow: Input, side: LeftSide, along }) node.inputs [ 20.0, 4000.0 ] }
+  _ -> Nothing
+
 -- | The columns engine with its first fixed node made two pixels taller.
 taller :: Engine Number
 taller = case engine of
@@ -146,6 +158,24 @@ suite = do
   expect "a reaches d through b and c, in layers 0 to 3; p, read only where d is made, is in layer 2 beside c, not in layer 0 beside a"
     (map layerOf [ "a", "b", "c", "d", "p" ] == [ Just 0, Just 1, Just 2, Just 3, Just 2 ])
   expectNone "and the layout is lawful" (map _.words (check engine plainPicture late lateLaid))
+
+  log "render: no node begins deeper than the spacing says, where its column has room"
+  let tall = plainPicture { fixed = fixedTall }
+  let pulled = run engine tall fed
+  let limited = columns (defaultSpacing { deepest = Just 100.0 }) scaling
+  let risen = run limited tall fed
+  let topOf laidOut name = map _.box.y (Array.find (\placed -> placed.node.key == ItemKey (ItemId name)) laidOut.nodes)
+  expect "pulled as far as it is pulled, the item read 4,000 pixels down the tall step begins more than 3,000 down the picture"
+    (map (_ > 3000.0) (topOf pulled "low") == Just true)
+  expect "with deepest at a hundred, it begins a hundred under the margin, and the item read near the top stays where it was pulled, above it"
+    (topOf risen "low" == Just (defaultSpacing.margin + 100.0) && topOf risen "high" == topOf pulled "high" && map (_ < defaultSpacing.margin + 100.0) (topOf risen "high") == Just true)
+  expectNone "the raised layout keeps the general laws and the four promised: the ribbon still ends at its port, 4,000 pixels down" (map _.words (check limited tall fed risen))
+  let crowded = run (columns (defaultSpacing { deepest = Just 0.0 }) scaling) tall fed
+  expect "with deepest at nothing and two nodes in the column, the second stands a node's gap under the first: its column leaves it no room at the top"
+    ( case topOf crowded "high", topOf crowded "low" of
+        Just high, Just low -> high == defaultSpacing.margin && low == high + defaultSpacing.nodeHeight + defaultSpacing.nodeGap
+        _, _ -> false
+    )
 
   log "render: a wrong columns engine fails exactly the law it breaks"
   for_ [ { name: "makes a fixed box two pixels taller", made: taller, breaks: FixedKept }, { name: "draws a ribbon half as broad as its units say", made: thinned, breaks: Scaled } ] \given -> do

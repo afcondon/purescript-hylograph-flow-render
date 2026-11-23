@@ -31,6 +31,16 @@
 -- |   `passes` times. After each pull a column is put in the order its nodes
 -- |   want, pushed apart to `nodeGap`, and moved as a whole by the mean of
 -- |   what the push cost, so that it does not creep down the page.
+-- | - **No deeper than `deepest`.** A table drawn with every row is some
+-- |   thousands of pixels tall, and a small node that feeds its middle is
+-- |   pulled level with that middle, a long way under the first screenful.
+-- |   Where the spacing says `deepest: Just limit`, no node begins more than
+-- |   `limit` under the top of the picture, unless the nodes above it in
+-- |   its own column leave it no room: after the pulling, each column is
+-- |   taken from the top down, and a node below the limit is raised to it
+-- |   or to `nodeGap` under the node above, whichever is lower. The order
+-- |   of a column's nodes is kept. The ribbon then runs down to the row it
+-- |   governs. `Nothing` (the default) raises nothing.
 -- | - **Routes.** A ribbon from where an edge leaves its source to where it
 -- |   enters its target: at a placed port where the edge names one the node
 -- |   has placed, and otherwise stacked on the node's right side (leaving)
@@ -73,7 +83,9 @@ import Hylograph.Flow.Render.Text (heightOf, setWords)
 -- | nodes of a column. `margin`: round the picture. `nodeWidth`,
 -- | `nodeHeight`: the size of a node the picture does not fix (taller
 -- | where its words need it). `passes`: how many times the nodes are pulled
--- | down the page, each time with the flow and against it.
+-- | down the page, each time with the flow and against it. `deepest`: how
+-- | far under the top of the picture a node may begin, where its column
+-- | has room (the header says how); `Nothing` for as far as it is pulled.
 type Spacing =
   { layerGap :: Number
   , nodeGap :: Number
@@ -81,10 +93,11 @@ type Spacing =
   , nodeWidth :: Number
   , nodeHeight :: Number
   , passes :: Int
+  , deepest :: Maybe Number
   }
 
 defaultSpacing :: Spacing
-defaultSpacing = { layerGap: 90.0, nodeGap: 36.0, margin: 24.0, nodeWidth: 112.0, nodeHeight: 36.0, passes: 12 }
+defaultSpacing = { layerGap: 90.0, nodeGap: 36.0, margin: 24.0, nodeWidth: 112.0, nodeHeight: 36.0, passes: 12, deepest: Nothing }
 
 -- | The columns engine at a spacing and a scaling of widths.
 columns :: forall wire. Spacing -> Scaling wire -> Engine wire
@@ -235,7 +248,29 @@ laidOut spacing scaling given projection =
 
   settled = foldl sweep firstTops (Array.range 1 spacing.passes)
   highest = fromMaybe 0.0 (minimum (Array.fromFoldable (Map.values settled)))
-  finalTop index = topOf settled index - highest + spacing.margin
+  pulledTop index = topOf settled index - highest + spacing.margin
+
+  -- no node begins deeper than the limit, where its column has room
+  raised :: Map Int Number
+  raised = case spacing.deepest of
+    Nothing -> Map.empty
+    Just limit -> foldl
+      ( \tops layer ->
+          ( foldl
+              ( \state n ->
+                  let
+                    top = max state.floor (min (pulledTop n.index) (spacing.margin + limit))
+                  in
+                    { floor: top + n.height + spacing.nodeGap, tops: Map.insert n.index top state.tops }
+              )
+              { floor: spacing.margin, tops }
+              (Array.sortBy (comparing (\n -> pulledTop n.index) <> comparing _.index) (Array.filter (\n -> n.layer == layer) sized))
+          ).tops
+      )
+      Map.empty
+      layerIndices
+
+  finalTop index = fromMaybe (pulledTop index) (Map.lookup index raised)
 
   boxOfSized :: Sized -> Box
   boxOfSized n = { x: xOf n, y: finalTop n.index, width: n.width, height: n.height }

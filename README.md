@@ -285,6 +285,11 @@ height and whose rows' places only the caller knows):
   `FlowsForward`, `LayersAligned`, `KeepsFixed` and `WidthsScaled`. It
   draws no outlines: told of open groups, it breaks the general law
   `Outlined`, and its tests say so.
+  `Spacing.deepest :: Maybe Number` says how far under the top of the
+  picture a node may begin, where its column has room: a node that feeds
+  the middle of a node thousands of pixels tall is otherwise pulled level
+  with that middle, under the first screenful. `Nothing` (the default)
+  raises nothing.
 - **`Decoration.inside :: Node -> Maybe Tree`**: a node's inside, drawn by
   the caller in the node's own coordinates. The tree draws it in a
   `g.flow-inside` moved to the node's box, with the node's port squares,
