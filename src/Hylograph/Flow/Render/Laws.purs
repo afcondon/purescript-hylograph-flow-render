@@ -111,7 +111,7 @@ import Hylograph.Flow.Render.Engine (Box, Conservation, Course(..), Direction(..
 import Hylograph.Flow.Render.Route (Point, Route(..))
 import Hylograph.Flow.Render.Route as Route
 import Hylograph.Flow.Render.Sankey (Metrics, Widths(..), sankey)
-import Hylograph.Flow.Render.Text (available, estimateWidth, heavier, heightOf)
+import Hylograph.Flow.Render.Text (available, breadthOf, estimateWidth, heavier, heightOf)
 
 -- | A law; see the module's header for what each says.
 data Law
@@ -516,7 +516,7 @@ promiseFaults promise given projection laid = map (\words -> { law: lawOf promis
                   if Array.null entering && Array.null leaving then []
                   else
                     sideFaults n "into" entering <> sideFaults n "out of" leaving
-                      <> (if near (extentAcross n.box) (max wider (needOf n)) then [] else [ describe n <> " is " <> show (extentAcross n.box) <> " tall, its wider side is " <> show wider <> " and its words need " <> show (needOf n) ])
+                      <> (if near (extentAcross n.box) (max wider (needOf n)) then [] else [ describe n <> " is " <> show (extentAcross n.box) <> " across the flow, its wider side is " <> show wider <> " and its words need " <> show (needOf n) ])
             )
             laid.nodes
     where
@@ -546,8 +546,9 @@ promiseFaults promise given projection laid = map (\words -> { law: lawOf promis
         (if within then [] else [ "an edge " <> name <> " " <> describe n <> " stands outside it" ])
           <> (if apart then [] else [ "two edges " <> name <> " " <> describe n <> " stand on one another" ])
 
-    -- words need room down the page, which is across the flow only where
-    -- the flow runs left to right
+    -- what a node's words need across the flow: left to right their
+    -- lines' height, top-down their widest line's breadth
     needOf n = case laid.direction, n.words of
       LeftToRight, Just set -> heightOf given.lettering set
-      _, _ -> 0.0
+      TopDown, Just set -> breadthOf given.lettering set
+      _, Nothing -> 0.0

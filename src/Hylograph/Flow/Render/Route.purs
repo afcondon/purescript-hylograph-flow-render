@@ -57,6 +57,7 @@ module Hylograph.Flow.Render.Route
   , turning
   , bends
   , numbers
+  , transpose
   , svgPath
   , hopRadius
   , distance
@@ -220,6 +221,20 @@ numbers = case _ of
   inkNumbers = case _ of
     Band -> []
     Hairline stroke -> [ stroke ]
+
+-- | A route with x for y at every point: the route of a layout stood on
+-- | end (0.5).
+transpose :: Route -> Route
+transpose = case _ of
+  Ribbon ribbon -> Ribbon ribbon { from = turned ribbon.from, pieces = map piece ribbon.pieces }
+  Polyline line -> Polyline { from: turned line.from, through: map turned line.through, to: turned line.to, jumps: map turned line.jumps }
+  Spline spline -> Spline { from: turned spline.from, curves: map curve spline.curves }
+  where
+  turned point = { x: point.y, y: point.x }
+  curve c = { leaving: turned c.leaving, arriving: turned c.arriving, to: turned c.to }
+  piece = case _ of
+    Straight to -> Straight (turned to)
+    Curved c -> Curved (curve c)
 
 -- | The radius of the hop a polyline makes over an edge it crosses.
 hopRadius :: Number

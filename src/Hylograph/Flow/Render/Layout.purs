@@ -23,7 +23,7 @@ module Hylograph.Flow.Render.Layout
 import Hylograph.Flow (Projection)
 import Hylograph.Flow.Render.Engine (Box, Course(..), Direction(..), Engine(..), Groups, Layout, OutlineMetrics, Picture, PlacedEdge, PlacedNode, PlacedOutline, PlacedPort, Point, PortFlow(..), Promise(..), Side(..), defaultOutline, openPaths, plainPicture, portPoint, run) as Exports
 import Hylograph.Flow.Render.Engine (Layout, plainPicture, run)
-import Hylograph.Flow.Render.Sankey (Metrics, Widths(..), defaultMetrics, sankey, widthOf) as Exports
+import Hylograph.Flow.Render.Sankey (Metrics, Widths(..), defaultMetrics, sankey, sankeyToward, widthOf) as Exports
 import Hylograph.Flow.Render.Sankey (Metrics, Widths, sankey)
 
 -- | The Sankey engine's layout of a projection with no words set and no

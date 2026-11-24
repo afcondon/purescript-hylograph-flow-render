@@ -4,7 +4,7 @@
 -- | group of one member, a group with a member no edge touches, an open
 -- | group over a closed one), each under every drawing, plain and by
 -- | quantity, with and without words; and the tree's outline marks.
-module Test.Render.Groups (suite) where
+module Test.Render.Groups (suite, Case, cases, works, wordsOf, quantity) where
 
 import Prelude
 

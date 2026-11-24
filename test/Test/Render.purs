@@ -21,6 +21,7 @@ import Hylograph.Flow.Render.Route (Route(..))
 import Hylograph.Flow.Render.Tree (strokeOf)
 import Test.Render.Fixtures (chain, drawings, expect, expectNone, long, quantity, sankeyMetrics, scan, subjects, unconnected, weighted)
 import Test.Render.Columns as Columns
+import Test.Render.Down as Down
 import Test.Render.Engines as Engines
 import Test.Render.Example as Example
 import Test.Render.Groups as Groups
@@ -94,6 +95,7 @@ main = do
   Groups.suite
   Engines.suite
   Columns.suite
+  Down.suite
   Measures.suite
   Example.suite
   log "render: all green"

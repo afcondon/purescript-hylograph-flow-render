@@ -39,6 +39,7 @@ module Hylograph.Flow.Render.Text
   , wrap
   , setWords
   , heightOf
+  , breadthOf
   , lineHeight
   , available
   ) where
@@ -190,3 +191,13 @@ heightOf lettering set =
   2.0 * lettering.margin
     + toNumber (Array.length set.title) * lineHeight lettering lettering.titleSize
     + toNumber (Array.length set.detail) * lineHeight lettering lettering.detailSize
+
+-- | How broad a box must be to hold words as set (0.5): the widest line,
+-- | as estimated and judged (`caution`, and `heavier` for the title), with
+-- | the inset and the outset. `available` of it is that widest line, so the
+-- | words set in a box this broad are within their room.
+breadthOf :: Lettering -> SetWords -> Number
+breadthOf lettering set = lettering.inset + lettering.outset + foldl max 0.0
+  ( map (\line -> lettering.caution * heavier * estimateWidth lettering.titleSize line) set.title
+      <> map (\line -> lettering.caution * estimateWidth lettering.detailSize line) set.detail
+  )

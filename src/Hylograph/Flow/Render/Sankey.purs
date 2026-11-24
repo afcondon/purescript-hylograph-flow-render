@@ -82,6 +82,7 @@ module Hylograph.Flow.Render.Sankey
   , defaultMetrics
   , widthOf
   , sankey
+  , sankeyToward
   ) where
 
 import Prelude
@@ -105,7 +106,8 @@ import Hylograph.Flow (Edge, ElementKey, GroupId(..), Projection)
 import Hylograph.Flow.Render.Engine (Course(..), Direction(..), Engine(..), Layout, Picture, Promise(..), openPaths)
 import Hylograph.Flow.Render.Internal.Bands (Block(..), arrange)
 import Hylograph.Flow.Render.Route (Ink(..), Piece(..), Point, Route(..))
-import Hylograph.Flow.Render.Text (SetWords, heightOf, setWords)
+import Hylograph.Flow.Render.Route as Route
+import Hylograph.Flow.Render.Text (SetWords, breadthOf, heightOf, setWords)
 
 -- | How wide an edge is. `Plain`: every edge one unit, drawn as a hairline.
 -- | `Sankey`: the caller reads the width from the edge, which carries what
@@ -141,12 +143,23 @@ widthOf widths edge = case widths of
     in if isFinite w && w > 0.0 then w else 0.0
 
 
--- | The Sankey engine at a scale and a choice of widths.
+-- | The Sankey engine at a scale and a choice of widths, the flow running
+-- | left to right.
 sankey :: forall wire. Metrics -> Widths wire -> Engine wire
-sankey metrics widths = Engine
-  { name: "sankey"
+sankey = sankeyToward LeftToRight
+
+-- | The Sankey engine with the flow running the way it is told (0.5): left
+-- | to right, its layers columns, or top-down, its layers rows. The promises
+-- | are the same three either way, and `Laws` reads each by the layout's
+-- | direction. See the module's header for what top-down means for a node's
+-- | size, its words, and an open group's outline.
+sankeyToward :: forall wire. Direction -> Metrics -> Widths wire -> Engine wire
+sankeyToward direction metrics widths = Engine
+  { name: case direction of
+      LeftToRight -> "sankey"
+      TopDown -> "sankey, top-down"
   , promises: [ FlowsForward, LayersAligned, WidthsConserved { pixelsPerUnit: metrics.unit, unitsOf: widthOf widths } ]
-  , layout: laidOut metrics widths
+  , layout: laidOut direction metrics widths
   }
 
 -- | A box of the Sankey layout to be ordered: a node or a waypoint.
@@ -159,18 +172,29 @@ data Shape
   = One String
   | Many GroupId (Array Shape)
 
-laidOut :: forall wire. Metrics -> Widths wire -> Picture -> Projection wire -> Layout wire
-laidOut metrics widths given projection =
-  { direction: LeftToRight
-  , nodes: Array.sortWith _.index (layered <> stood <> shelved)
-  , edges: Array.sortWith _.index (forward <> backward)
-  , outlines
-  , width: 2.0 * inset + foldl max (foldl (\acc n -> max acc n.x1) placed.chart.x1 placed.isolated) (map (\n -> n.box.x - inset + n.box.width) stood)
-  , height:
-      if Array.null chartBoxes then foldl (\acc n -> max acc (n.y1 + sink)) arranged.bottom placed.isolated
-      else placed.extent.y1 + sink
-  }
+-- | Everything below is worked out with the flow running left to right: x
+-- | along the flow, y across it. A top-down layout is that one stood on end
+-- | at the last (`onEnd`), with the four things that are not the same on
+-- | end told apart by `direction` where they are made: what a node's words
+-- | need across the flow, how far a node reaches along it, where an
+-- | outline's strip is, and the margins before the first layer and after
+-- | the last.
+laidOut :: forall wire. Direction -> Metrics -> Widths wire -> Picture -> Projection wire -> Layout wire
+laidOut direction metrics widths given projection = case direction of
+  LeftToRight -> flat
+  TopDown -> onEnd flat
   where
+  flat =
+    { direction: LeftToRight
+    , nodes: Array.sortWith _.index (layered <> stood <> shelved)
+    , edges: Array.sortWith _.index (forward <> backward)
+    , outlines
+    , width: lead + trail + foldl max (foldl (\acc n -> max acc n.x1) placed.chart.x1 placed.isolated) (map (\n -> n.box.x - lead + n.box.width) stood)
+    , height:
+        if Array.null chartBoxes then foldl (\acc n -> max acc (n.y1 + sink)) arranged.bottom placed.isolated
+        else placed.extent.y1 + sink
+    }
+
   -- the first node with a key stands for the key
   indexOf :: Map ElementKey Int
   indexOf = foldl (\m (Tuple i n) -> if Map.member n.key m then m else Map.insert n.key i m) Map.empty (Array.mapWithIndex Tuple projection.nodes)
@@ -194,17 +218,45 @@ laidOut metrics widths given projection =
   rows = routable <#> \r -> { s: nameOf r.from, t: nameOf r.to, v: widthOf widths r.edge }
   mentioned = Set.fromFoldable (rows >>= \row -> [ row.s, row.t ])
 
-  -- room on each side for an edge that turns back
-  inset = metrics.layerGap / 2.0
-  reach = inset * 0.9
-  pitch = metrics.nodeBreadth + metrics.layerGap
+  -- room for an edge that turns back
+  turn = metrics.layerGap / 2.0
+  reach = turn * 0.9
+
+  -- how far a node reaches along the flow. Left to right, the breadth the
+  -- metrics give. Top-down that is how tall it is, and its words are set
+  -- down the page: as tall as the tallest words of any node, so that the
+  -- nodes of a layer are one row; `restHeight` where no words are set
+  extent = case direction of
+    LeftToRight -> metrics.nodeBreadth
+    TopDown -> if isJust given.words then foldl (\tallest words -> max tallest (fromMaybe 0.0 (heightOf given.lettering <$> words))) 0.0 set else metrics.restHeight
+  pitch = extent + metrics.layerGap
+
+  -- the margins before the first layer and after the last. Left to right,
+  -- room for an edge to turn back, as since 0.1, whether or not one does.
+  -- Top-down, only what is used: that room where an edge does turn back,
+  -- and an outline's padding and strip where there is an outline; so a
+  -- picture with neither begins at its first row and ends at its last
+  turnsBack = not (Array.null placed.backEdges)
+  lead = case direction of
+    LeftToRight -> turn
+    TopDown -> max (if turnsBack then turn else 0.0) (if Array.null arranged.frames then 0.0 else toNumber deepest * (along.padding + along.header) + 2.0)
+  trail = case direction of
+    LeftToRight -> turn
+    TopDown -> max (if turnsBack then turn else 0.0) (if Array.null arranged.frames then 0.0 else toNumber deepest * along.padding + 2.0)
 
   -- ---- words ----------------------------------------------------------------
   set :: Array (Maybe SetWords)
   set = projection.nodes <#> \node -> given.words <#> \say -> setWords given.lettering metrics.nodeBreadth (say node)
 
   needs :: Map String Number
-  needs = Map.fromFoldable $ Array.catMaybes $ Array.mapWithIndex (\index words -> words <#> \lines -> Tuple (nameOf index) (heightOf given.lettering lines)) set
+  needs = Map.fromFoldable $ Array.catMaybes $ Array.mapWithIndex (\index words -> words <#> \lines -> Tuple (nameOf index) (roomFor lines)) set
+
+  -- what words need across the flow: left to right, their lines' height;
+  -- top-down, their widest line's breadth
+  roomFor :: SetWords -> Number
+  roomFor lines = case direction of
+    LeftToRight -> heightOf given.lettering lines
+    TopDown -> breadthOf given.lettering lines
 
   needOf :: String -> Number
   needOf name = fromMaybe 0.0 (Map.lookup name needs)
@@ -240,7 +292,7 @@ laidOut metrics widths given projection =
   config = (defaultSankeyConfig 1000.0 1000.0)
     { alignment = Left
     , linkColorMode = StaticColor ""
-    , nodeWidth = metrics.nodeBreadth
+    , nodeWidth = extent
     , nodePadding = metrics.nodeGap
     , extent = { x0: 0.0, y0: 0.0, x1: 1000.0, y1: 1000.0 }
     }
@@ -336,7 +388,16 @@ laidOut metrics widths given projection =
   blocks :: Array Block
   blocks = if active then map blockOf order else []
 
-  arranged = arrange { gap: metrics.nodeGap, padding: given.outline.padding, header: given.outline.header } blocks
+  -- top-down, an outline's strip is before its first layer, along the
+  -- flow, and takes no room across it
+  arranged = arrange
+    { gap: metrics.nodeGap
+    , padding: given.outline.padding
+    , header: case direction of
+        LeftToRight -> given.outline.header
+        TopDown -> 0.0
+    }
+    blocks
 
   heights :: Map String Number
   heights = Map.fromFoldable (blocks >>= sized)
@@ -369,7 +430,7 @@ laidOut metrics widths given projection =
     else max 0.0 (arranged.bottom - placed.chart.y1)
 
   shift :: Point -> Point
-  shift p = { x: p.x + inset, y: p.y }
+  shift p = { x: p.x + lead, y: p.y }
 
   inLayers = Map.fromFoldable (placed.nodes <#> \n -> Tuple n.name n)
   onShelf = Map.fromFoldable (placed.isolated <#> \n -> Tuple n.name n)
@@ -381,7 +442,7 @@ laidOut metrics widths given projection =
     ( \index node -> Map.lookup (nameOf index) inLayers <#> \n ->
         { index
         , node
-        , box: { x: n.x0 + inset, y: topOf n.name n.y0, width: n.x1 - n.x0, height: heightAt n.name (n.y1 - n.y0) }
+        , box: { x: n.x0 + lead, y: topOf n.name n.y0, width: n.x1 - n.x0, height: heightAt n.name (n.y1 - n.y0) }
         , layer: Just n.layer
         , words: wordsOf index
         , ports: []
@@ -397,7 +458,7 @@ laidOut metrics widths given projection =
           if Set.member name straySet then Map.lookup name arranged.tops <#> \y ->
             { index
             , node
-            , box: { x: toNumber (strayLayer name) * pitch + inset, y, width: metrics.nodeBreadth, height: heightAt name metrics.restHeight }
+            , box: { x: toNumber (strayLayer name) * pitch + lead, y, width: extent, height: heightAt name metrics.restHeight }
             , layer: Just (strayLayer name)
             , words: wordsOf index
             , ports: []
@@ -408,7 +469,7 @@ laidOut metrics widths given projection =
 
   shelved = Array.catMaybes $ Array.mapWithIndex
     ( \index node -> Map.lookup (nameOf index) onShelf <#> \n ->
-        { index, node, box: { x: n.x0 + inset, y: n.y0 + sink, width: n.x1 - n.x0, height: n.y1 - n.y0 }, layer: Nothing, words: wordsOf index, ports: [] }
+        { index, node, box: { x: n.x0 + lead, y: n.y0 + sink, width: n.x1 - n.x0, height: n.y1 - n.y0 }, layer: Nothing, words: wordsOf index, ports: [] }
     )
     projection.nodes
 
@@ -416,7 +477,20 @@ laidOut metrics widths given projection =
   -- across the flow an outline has less room than down it: half a layer's
   -- gap, shared by every outline one in another
   deepest = foldl (\most frame -> max most (frame.levels + 1)) 1 arranged.frames
-  across = max 0.0 (min given.outline.padding ((inset - 2.0) / toNumber deepest))
+  across = max 0.0 (min given.outline.padding ((turn - 2.0) / toNumber deepest))
+
+  -- top-down, the same room between two layers holds, for each outline one
+  -- in another, its padding after its last layer, and its padding and its
+  -- strip before its first: all three as the picture asks where there is
+  -- room for them, and all three less, in proportion, where there is not
+  along :: { padding :: Number, header :: Number }
+  along =
+    let
+      asked = 2.0 * given.outline.padding + given.outline.header
+      room = max 0.0 ((metrics.layerGap - 4.0) / toNumber deepest)
+      share = if asked <= room || asked <= 0.0 then 1.0 else room / asked
+    in
+      { padding: given.outline.padding * share, header: given.outline.header * share }
 
   groupName :: GroupId -> String
   groupName group@(GroupId written) = case homes of
@@ -425,17 +499,26 @@ laidOut metrics widths given projection =
 
   outlines = arranged.frames <#> \frame ->
     let
-      margin = across * toNumber (frame.levels + 1)
+      within = toNumber (frame.levels + 1)
+      -- from the outline to its first layer, and from its last layer to it
+      before = case direction of
+        LeftToRight -> across * within
+        TopDown -> (along.padding + along.header) * within
+      after = case direction of
+        LeftToRight -> across * within
+        TopDown -> along.padding * within
     in
       { group: frame.group
       , name: groupName frame.group
       , box:
-          { x: toNumber frame.firstLayer * pitch + inset - margin
+          { x: toNumber frame.firstLayer * pitch + lead - before
           , y: frame.top
-          , width: toNumber (frame.lastLayer - frame.firstLayer) * pitch + metrics.nodeBreadth + 2.0 * margin
+          , width: toNumber (frame.lastLayer - frame.firstLayer) * pitch + extent + before + after
           , height: frame.bottom - frame.top
           }
-      , header: given.outline.header
+      , header: case direction of
+          LeftToRight -> given.outline.header
+          TopDown -> along.header
       , depth: frame.depth
       , parent: frame.parent
       , members: Array.sort (Array.mapMaybe (\name -> Map.lookup name numberOf) frame.leaves)
@@ -498,3 +581,20 @@ laidOut metrics widths given projection =
             }
         , course: Backward
         }
+
+-- | A layout made left to right, stood on end: x for y in every box and
+-- | every route, so that its columns are rows and it runs top-down. (The
+-- | Sankey engine places no ports, so there is none to move to another
+-- | side.) An outline's strip, which `laidOut` put before the outline's
+-- | first layer, is then at its top, where `PlacedOutline.header` says it is.
+onEnd :: forall wire. Layout wire -> Layout wire
+onEnd laid =
+  { direction: TopDown
+  , nodes: laid.nodes <#> \placed -> placed { box = turned placed.box }
+  , edges: laid.edges <#> \placed -> placed { route = Route.transpose placed.route }
+  , outlines: laid.outlines <#> \outline -> outline { box = turned outline.box }
+  , width: laid.height
+  , height: laid.width
+  }
+  where
+  turned box = { x: box.y, y: box.x, width: box.height, height: box.width }
