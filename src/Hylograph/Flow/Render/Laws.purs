@@ -67,6 +67,9 @@
 -- |   node: the engines that promise it keep the caller's sizes and ports,
 -- |   and how ribbons stand at a port is then the caller's to arrange.
 -- |
+-- | - `Carried` (`WidthsCarried`, 0.6): as `Conservation`, but the node is
+-- |   at least as broad as its broader side, not exactly.
+-- |
 -- | `check engine picture projection layout` is the general laws and
 -- | exactly the engine's promises. A fault says which law it is of (`Law`,
 -- | a closed ADT, so a test can say "this engine breaks `Apart` and nothing
@@ -129,6 +132,7 @@ data Law
   | Conservation
   | FixedKept
   | Scaled
+  | Carried
 
 derive instance Eq Law
 derive instance Ord Law
@@ -149,6 +153,7 @@ instance Show Law where
     Conservation -> "Conservation"
     FixedKept -> "FixedKept"
     Scaled -> "Scaled"
+    Carried -> "Carried"
 
 -- | What is wrong, and which law it is against.
 type Fault = { law :: Law, words :: String }
@@ -169,6 +174,7 @@ lawOf = case _ of
   WidthsConserved _ -> Conservation
   KeepsFixed -> FixedKept
   WidthsScaled _ -> Scaled
+  WidthsCarried _ -> Carried
 
 -- | No path of edges returns to where it began (an edge from a node to
 -- | itself is such a path).
@@ -417,7 +423,8 @@ promiseFaults promise given projection laid = map (\words -> { law: lawOf promis
   FlowsForward -> forward
   LayersAligned -> aligned
   RoutesOrthogonal -> orthogonal
-  WidthsConserved conservation -> conserved conservation
+  WidthsConserved conservation -> conserved true conservation
+  WidthsCarried conservation -> conserved false conservation
   KeepsFixed -> kept
   WidthsScaled scaling -> scaled scaling
   where
@@ -500,8 +507,10 @@ promiseFaults promise given projection laid = map (\words -> { law: lawOf promis
     _ -> Just (describeEdge placed <> " is not a ribbon")
 
   -- ---- widths ---------------------------------------------------------------------------
-  conserved :: Conservation wire -> Array String
-  conserved conservation =
+  -- `exactly`: the node is as broad as its broader side (or its words'
+  -- need); otherwise at least that
+  conserved :: Boolean -> Conservation wire -> Array String
+  conserved exactly conservation =
     notRibbons <>
       if not allPositive then []
       else
@@ -516,7 +525,7 @@ promiseFaults promise given projection laid = map (\words -> { law: lawOf promis
                   if Array.null entering && Array.null leaving then []
                   else
                     sideFaults n "into" entering <> sideFaults n "out of" leaving
-                      <> (if near (extentAcross n.box) (max wider (needOf n)) then [] else [ describe n <> " is " <> show (extentAcross n.box) <> " across the flow, its wider side is " <> show wider <> " and its words need " <> show (needOf n) ])
+                      <> (if near (extentAcross n.box) (max wider (needOf n)) || (not exactly && extentAcross n.box >= max wider (needOf n) - 1.0e-4) then [] else [ describe n <> " is " <> show (extentAcross n.box) <> " across the flow, its wider side is " <> show wider <> " and its words need " <> show (needOf n) ])
             )
             laid.nodes
     where

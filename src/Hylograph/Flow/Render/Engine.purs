@@ -335,6 +335,10 @@ scaledBreadth scaling units = max scaling.least (scaling.pixelsPerUnit * (if isF
 -- |   said of the node: an engine that keeps the caller's sizes cannot also
 -- |   make a node as tall as what passes through it (a table of 240 rows
 -- |   gives one value: 240 units in, one out).
+-- | - `WidthsCarried` (0.6): as `WidthsConserved`, but a node is *at least*
+-- |   as broad as its broader side, not exactly: the unfolding engine's
+-- |   closed group is as broad as the most of its inside that is ever
+-- |   abreast, which can be more than crosses its boundary.
 data Promise wire
   = FlowsForward
   | LayersAligned
@@ -342,6 +346,7 @@ data Promise wire
   | WidthsConserved (Conservation wire)
   | KeepsFixed
   | WidthsScaled (Scaling wire)
+  | WidthsCarried (Conservation wire)
 
 -- | A layout engine: what it is called, what it promises of every layout it
 -- | makes, and the making.

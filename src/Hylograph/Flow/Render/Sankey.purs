@@ -138,6 +138,7 @@ module Hylograph.Flow.Render.Sankey
   , widthOf
   , sankey
   , sankeyToward
+  , stoodOnEnd
   ) where
 
 import Prelude
@@ -231,7 +232,7 @@ data Shape
 
 -- | Everything below is worked out with the flow running left to right: x
 -- | along the flow, y across it. A top-down layout is that one stood on end
--- | at the last (`onEnd`), with the four things that are not the same on
+-- | at the last (`stoodOnEnd`), with the four things that are not the same on
 -- | end told apart by `direction` where they are made: what a node's words
 -- | need across the flow, how far a node reaches along it, where an
 -- | outline's strip is, and the margins before the first layer and after
@@ -239,7 +240,7 @@ data Shape
 laidOut :: forall wire. Direction -> Metrics -> Widths wire -> Picture -> Projection wire -> Layout wire
 laidOut direction metrics widths given projection = case direction of
   LeftToRight -> flat
-  TopDown -> onEnd flat
+  TopDown -> stoodOnEnd flat
   where
   flat =
     { direction: LeftToRight
@@ -722,8 +723,9 @@ laidOut direction metrics widths given projection = case direction of
 -- | Sankey engine places no ports, so there is none to move to another
 -- | side.) An outline's strip, which `laidOut` put before the outline's
 -- | first layer, is then at its top, where `PlacedOutline.header` says it is.
-onEnd :: forall wire. Layout wire -> Layout wire
-onEnd laid =
+-- | (Exported since 0.6, for an engine that is made the same way.)
+stoodOnEnd :: forall wire. Layout wire -> Layout wire
+stoodOnEnd laid =
   { direction: TopDown
   , nodes: laid.nodes <#> \placed -> placed { box = turned placed.box }
   , edges: laid.edges <#> \placed -> placed { route = Route.transpose placed.route }
