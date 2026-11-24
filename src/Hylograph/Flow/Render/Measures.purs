@@ -25,8 +25,16 @@
 -- |   ends at that node, they meet there, as two edges into one port do
 -- |   when their ends are computed a hair apart; any other crossing of two
 -- |   edges with a node in common counts. (Since 0.3.1; before, such a
--- |   meeting counted one.) A crossing exactly at a point where both lines
--- |   are cut into pieces is a touch by this rule and is not counted.
+-- |   meeting counted one.) **A crossing at a point where a line is cut
+-- |   into pieces counts too (0.7)**: where one line has a corner on the
+-- |   other (on a corner of it, or within one of its pieces) and the two
+-- |   pieces either side of that corner lie strictly on opposite sides of
+-- |   the other line there, the lines cross once. Until 0.7 that was a
+-- |   touch and scored nothing, which missed the commonest crossing a
+-- |   layered layout has: two neighbours of a tier that change places on
+-- |   the way to the next cross exactly at the middle of their two curves,
+-- |   and the middle is where a curve is cut. A corner that touches and
+-- |   turns back, and two lines that share a stretch, still cross nowhere.
 -- | - `edgeLength`: the sum of the lengths of every edge's line, pixels.
 -- | - `bends`: total turning, in right angles: the sum over every interior
 -- |   point of every line of the angle turned there, divided by 90
@@ -84,7 +92,7 @@ import Data.Array as Array
 import Data.Foldable (foldl, sum)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
-import Data.Number (pi)
+import Data.Number (abs, atan2, pi)
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Hylograph.Flow (Projection)
@@ -174,12 +182,50 @@ score drawn =
 -- geometry
 -- ---------------------------------------------------------------------------
 
-type Piece = { edge :: Int, a :: Point, b :: Point, left :: Number, right :: Number, top :: Number, bottom :: Number }
+-- | `next`: where the edge's line goes after this piece, where it goes on.
+type Piece = { edge :: Int, a :: Point, b :: Point, next :: Maybe Point, left :: Number, right :: Number, top :: Number, bottom :: Number }
 
 piecesOf :: Drawn -> Array Piece
 piecesOf drawn = Array.concat $ Array.mapWithIndex
-  (\edge drawnEdge -> Array.zipWith (\a b -> { edge, a, b, left: min a.x b.x, right: max a.x b.x, top: min a.y b.y, bottom: max a.y b.y }) drawnEdge.points (Array.drop 1 drawnEdge.points))
+  (\edge drawnEdge -> Array.mapWithIndex (\place (Tuple a b) -> { edge, a, b, next: Array.index drawnEdge.points (place + 2), left: min a.x b.x, right: max a.x b.x, top: min a.y b.y, bottom: max a.y b.y }) (Array.zip drawnEdge.points (Array.drop 1 drawnEdge.points)))
   drawn.edges
+
+-- | Whether one line crosses another at the corner where `piece` ends (0.7):
+-- | the corner is on the other line, at the corner where `other` ends or
+-- | within `other`, and the pieces either side of it are strictly on
+-- | opposite sides of the other line there. Each such crossing is found for
+-- | one pair of pieces only: the two that end at it, or the one that ends
+-- | at it and the one it is within.
+cornerCrossing :: Piece -> Piece -> Boolean
+cornerCrossing piece other = case piece.next of
+  Nothing -> false
+  Just after ->
+    if same piece.b other.b then case other.next of
+      Just beyond -> sectors other.a beyond piece.b piece.a after
+      Nothing -> false
+    else if same piece.b other.a then false
+    else inside piece.b other && opposite (cross other.a other.b piece.a) (cross other.a other.b after)
+  where
+  same p q = distance p q <= 1.0e-7
+  opposite m n = (m > tiny && n < -tiny) || (m < -tiny && n > tiny)
+  tiny = 1.0e-9
+  -- strictly within a piece: on its line, and between its ends
+  inside point q =
+    let
+      long = distance q.a q.b
+      reach = ((point.x - q.a.x) * (q.b.x - q.a.x) + (point.y - q.a.y) * (q.b.y - q.a.y)) / long
+    in
+      long > 1.0e-7 && abs (cross q.a q.b point) / long <= 1.0e-7 && reach > 1.0e-7 && reach < long - 1.0e-7
+  -- the rays from `at` to `d` and to `e` cut the plane in two; `a` and `c`
+  -- are strictly in different halves
+  sectors d e at a c =
+    let
+      turn point = let angle = atan2 (point.y - at.y) (point.x - at.x) - atan2 (d.y - at.y) (d.x - at.x) in if angle < 0.0 then angle + 2.0 * pi else angle
+      wedge = turn e
+      strictly angle = angle > 1.0e-9 && abs (angle - wedge) > 1.0e-9 && angle < 2.0 * pi - 1.0e-9
+      within angle = angle < wedge
+    in
+      strictly (turn a) && strictly (turn c) && wedge > 1.0e-9 && within (turn a) /= within (turn c)
 
 properly :: Piece -> Piece -> Boolean
 properly p q =
@@ -220,7 +266,13 @@ crossings drawn = sweep 0 0
     Just other ->
       if other.left > piece.right then found
       else against piece (at + 1)
-        (if other.edge /= piece.edge && other.top <= piece.bottom && piece.top <= other.bottom && properly piece other && not (meeting piece other) then found + 1 else found)
+        ( if other.edge /= piece.edge && other.top <= piece.bottom && piece.top <= other.bottom then
+            found
+              + (if properly piece other && not (meeting piece other) then 1 else 0)
+              + (if cornerCrossing piece other then 1 else 0)
+              + (if not (distance piece.b other.b <= 1.0e-7) && cornerCrossing other piece then 1 else 0)
+          else found
+        )
 
 -- | Where two pieces' lines cross, if they are not parallel.
 intersection :: Piece -> Piece -> Maybe Point
