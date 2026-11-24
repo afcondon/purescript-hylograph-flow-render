@@ -59,12 +59,38 @@
 -- | `label` is not used; its `note` stands at the right of the first line.
 -- | Where it did not, the mark's `label` is written on one line, as in 0.2.
 -- |
+-- | Legibility (0.7; `treeWith` and its `Dress`, none of it drawn by `tree`
+-- | or `treeLabelled` unless said):
+-- |
+-- | - a ribbon that runs against the flow carries marks of its direction
+-- |   along it, and no other ribbon does (`Dress.marks`);
+-- | - a ribbon drawn broader than it is (`Ink.Least`) is dashed and has the
+-- |   class `flow-not-to-scale` in any tree, and with `Dress.marks` a break
+-- |   mark across its middle;
+-- | - a closed group's bar shows its seams (`Dress.seams`, which the
+-- |   unfolding engine's `seams` gives): a line across the bar where two
+-- |   parts divide, and beside a part that only receives a wall on the side
+-- |   nothing leaves by, beside one that only gives a wall on the side
+-- |   nothing enters by;
+-- | - a group's name is a heading (`Dress.headings`): a closed top-level
+-- |   group's name stands over the start of its bar, where its outline's
+-- |   name stands when it is open, in the same letters, so the name is in
+-- |   one place closed and open; and the labels of the nodes inside an open
+-- |   group are lighter and smaller than it;
+-- | - a group that has several outlines (the unfolding engine's tied
+-- |   outlines: one for each run of its members) has its name on each and a
+-- |   tie drawn from each to the next.
+-- |
 -- | What is drawn, for a stylesheet or a test to find:
 -- |
 -- | ```
 -- | svg.flow[data-direction=left-to-right|top-down]
--- |   g.flow-outlines > g.flow-outline[data-group][data-depth]
--- |                       > rect.flow-outline-box, rect.flow-outline-tab, text.flow-outline-label
+-- |   g.flow-outlines > g.flow-outline[data-group][data-depth][data-run]
+-- |                       > rect.flow-outline-box, rect.flow-outline-tab, text.flow-outline-label[.flow-group-name]
+-- |   g.flow-ties? > path.flow-tie[data-group]                      (where a group has several outlines)
+-- |   g.flow-marks? > path.flow-direction[data-edge] | path.flow-scale-break[data-edge]   (Dress.marks)
+-- |   (in a node, Dress.seams:) rect.flow-seam*, rect.flow-only[data-only=receives|gives][data-part]*
+-- |   (Dress.headings:) text.flow-label.flow-group-name on a closed top-level group; .flow-part-name on a part's label
 -- |   g.flow-edges > path.flow-edge.flow-ribbon|.flow-polyline|.flow-spline
 -- |                    .flow-band|.flow-hairline[.flow-backward][.flow-swept][data-edge][data-from][data-to]
 -- |   g.flow-nodes > g.flow-node.flow-item|.flow-step[.flow-lettered][data-key]
@@ -95,6 +121,9 @@ module Hylograph.Flow.Render.Tree
   , portSide
   , tree
   , treeLabelled
+  , Dress
+  , plainDress
+  , treeWith
   ) where
 
 import Prelude
@@ -104,14 +133,15 @@ import Data.Array.NonEmpty as NonEmptyArray
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Effect (Effect)
 import Hylograph.Flow (Edge, ElementKey(..), GroupId(..), ItemId(..), Node, StepId(..), WireId(..), itemLabel, portLabel, stepLabel)
-import Hylograph.Flow.Render.Engine (Course(..), Direction(..), Layout, PlacedEdge, PlacedNode, PlacedOutline, PlacedPort, portPoint)
+import Hylograph.Flow.Render.Engine (Course(..), Direction(..), Layout, Only(..), PlacedEdge, PlacedNode, PlacedOutline, PlacedPort, Seamed, portPoint, runsOf)
 import Hylograph.Flow.Render.Engine as Engine
 import Hylograph.Flow.Render.Route (Ink(..), Route(..))
 import Hylograph.Flow.Render.Route as Route
 import Hylograph.Flow.Overlay (Overlay)
 import Hylograph.Flow.Overlay as Overlay
 import Data.Int (toNumber)
-import Data.Number (abs)
+import Data.Int as Int
+import Data.Number (abs, sqrt)
 import Hylograph.Flow.Render.Text (defaultLettering, estimateWidth, heavier, lineHeight)
 import Hylograph.HATS (ElementType(..), Tree, elem, forEach, onClick, onMouseEnter, onMouseLeave, staticStr, withBehaviors)
 import Hylograph.HATS.Friendly as Friendly
@@ -307,11 +337,30 @@ portSide = 5.0
 tree :: forall wire. Decoration wire -> Layout wire -> Tree
 tree = treeLabelled Within
 
+-- | What a tree draws beside a decoration (0.7); see the module's header.
+-- | (Not fields of `Decoration`, so that no decoration written out whole
+-- | has to change.)
+type Dress =
+  { labels :: Labels
+  , marks :: Boolean
+  , seams :: Array Seamed
+  , headings :: Boolean
+  }
+
+-- | Labels within their boxes, and nothing of 0.7's: `tree`'s own dress.
+plainDress :: Dress
+plainDress = { labels: Within, marks: false, seams: [], headings: false }
+
 -- | The tree with each node's label written where it is told (0.6):
 -- | `tree` is `treeLabelled Within`. (Not a field of `Decoration`, so that
 -- | no decoration written out whole before 0.6 has to change.)
 treeLabelled :: forall wire. Labels -> Decoration wire -> Layout wire -> Tree
-treeLabelled labels decoration laid =
+treeLabelled labels = treeWith plainDress { labels = labels }
+
+-- | The tree, dressed (0.7): `treeLabelled labels` is `treeWith plainDress
+-- | { labels = labels }`.
+treeWith :: forall wire. Dress -> Decoration wire -> Layout wire -> Tree
+treeWith dress decoration laid =
   elem SVG
     [ staticStr "class" "flow"
     , staticStr "data-direction" (directionName laid.direction)
@@ -319,14 +368,128 @@ treeLabelled labels decoration laid =
     , Friendly.width (laid.width + 4.0)
     , Friendly.height (laid.height + 4.0)
     ]
-    [ elem Group [ staticStr "class" "flow-outlines" ]
-        [ forEach "flow-outlines" Group laid.outlines (groupName <<< _.group) outlineMark ]
-    , elem Group [ staticStr "class" "flow-edges" ]
-        [ forEach "flow-edges" Path laid.edges (show <<< _.index) edgeMark ]
-    , elem Group [ staticStr "class" "flow-nodes" ]
-        [ forEach "flow-nodes" Group laid.nodes (\n -> show n.index <> " " <> keyName n.node.key) nodeMark ]
-    ]
+    ( [ elem Group [ staticStr "class" "flow-outlines" ]
+          [ forEach "flow-outlines" Group runs (\found -> groupName found.outline.group <> (if found.run == 0 then "" else "#" <> show found.run)) outlineMark ]
+      ]
+        <> (if Array.null ties then [] else [ elem Group [ staticStr "class" "flow-ties" ] [ forEach "flow-ties" Path ties _.key tieMark ] ])
+        <>
+          [ elem Group [ staticStr "class" "flow-edges" ]
+              [ forEach "flow-edges" Path laid.edges (show <<< _.index) edgeMark ]
+          ]
+        <> (if dress.marks then [ elem Group [ staticStr "class" "flow-marks" ] [ forEach "flow-marks" Path marked (show <<< _.index) markOf ] ] else [])
+        <>
+          [ elem Group [ staticStr "class" "flow-nodes" ]
+              [ forEach "flow-nodes" Group laid.nodes (\n -> show n.index <> " " <> keyName n.node.key) nodeMark ]
+          ]
+    )
   where
+  labels = dress.labels
+
+  -- each outline with which of its group's it is
+  runs = runsOf laid.outlines
+
+  -- a tie from each outline of a group to the next of the same group
+  ties = runs # Array.mapMaybe \found ->
+    Array.find (\other -> other.outline.group == found.outline.group && other.run == found.run + 1) runs <#> \next ->
+      { key: groupName found.outline.group <> "#" <> show found.run, group: found.outline.group, from: found.outline.box, to: next.outline.box }
+
+  tieMark :: { key :: String, group :: GroupId, from :: Engine.Box, to :: Engine.Box } -> Tree
+  tieMark tie =
+    let
+      -- from the middle of the side of one outline that faces the next, to
+      -- the middle of the side of the next that faces it
+      ends = case laid.direction of
+        LeftToRight -> { a: { x: tie.from.x + tie.from.width, y: tie.from.y + tie.from.height / 2.0 }, b: { x: tie.to.x, y: tie.to.y + tie.to.height / 2.0 } }
+        TopDown -> { a: { x: tie.from.x + tie.from.width / 2.0, y: tie.from.y + tie.from.height }, b: { x: tie.to.x + tie.to.width / 2.0, y: tie.to.y } }
+      bend = case laid.direction of
+        LeftToRight -> let middle = (ends.a.x + ends.b.x) / 2.0 in { leaving: { x: middle, y: ends.a.y }, arriving: { x: middle, y: ends.b.y } }
+        TopDown -> let middle = (ends.a.y + ends.b.y) / 2.0 in { leaving: { x: ends.a.x, y: middle }, arriving: { x: ends.b.x, y: middle } }
+      at point = show point.x <> "," <> show point.y
+    in
+      elem Path
+        [ staticStr "class" "flow-tie"
+        , staticStr "data-group" (groupName tie.group)
+        , Friendly.d ("M" <> at ends.a <> " C" <> at bend.leaving <> " " <> at bend.arriving <> " " <> at ends.b)
+        , Friendly.fill "none"
+        , Friendly.stroke quiet
+        , Friendly.strokeWidth 1.0
+        , staticStr "stroke-dasharray" "2 3"
+        , staticStr "pointer-events" "none"
+        ]
+        []
+
+  -- the ribbons that carry a mark: turned back, or not to scale
+  marked = Array.filter (\e -> e.course == Backward || notToScale e.route) laid.edges
+
+  notToScale :: Route -> Boolean
+  notToScale = case _ of
+    Ribbon ribbon -> case ribbon.ink of
+      Least _ -> true
+      _ -> false
+    _ -> false
+
+  -- A ribbon turned back: arrowheads along its line, pointing the way it
+  -- runs. A ribbon not to scale and not turned back: two short strokes
+  -- across its middle, as a break in an axis is drawn.
+  markOf :: PlacedEdge wire -> Tree
+  markOf e =
+    let
+      points = Route.flatten e.route
+      legs = Array.zipWith (\a b -> { a, b, long: Route.distance a b }) points (Array.drop 1 points)
+      whole = Array.foldl (\total leg -> total + leg.long) 0.0 legs
+      -- the point so far along the line, and the way the line runs there
+      placeAt far = (Array.foldl
+        ( \state leg -> case state.found of
+            Just _ -> state
+            Nothing ->
+              if leg.long > 0.0 && state.gone + leg.long >= far then
+                let part = (far - state.gone) / leg.long
+                in state { found = Just { at: { x: leg.a.x + (leg.b.x - leg.a.x) * part, y: leg.a.y + (leg.b.y - leg.a.y) * part }, way: { x: (leg.b.x - leg.a.x) / leg.long, y: (leg.b.y - leg.a.y) / leg.long } } }
+              else state { gone = state.gone + leg.long }
+        )
+        { gone: 0.0, found: Nothing }
+        legs).found
+      size = max 3.5 (min 9.0 (0.3 * strokeOf e.route))
+      pitch = max 30.0 (6.0 * size)
+      count = max 1 (Int.floor (whole / pitch))
+      at point = show point.x <> "," <> show point.y
+      arrow found =
+        let
+          tip = { x: found.at.x + found.way.x * size, y: found.at.y + found.way.y * size }
+          wing side = { x: found.at.x - found.way.x * size + side * found.way.y * size, y: found.at.y - found.way.y * size - side * found.way.x * size }
+        in
+          "M" <> at (wing 1.0) <> " L" <> at tip <> " L" <> at (wing (-1.0))
+      break found =
+        let
+          slant = { x: (found.way.x - found.way.y) / sqrt 2.0, y: (found.way.y + found.way.x) / sqrt 2.0 }
+          stroke off = let c = { x: found.at.x + found.way.x * off, y: found.at.y + found.way.y * off } in "M" <> at { x: c.x - slant.x * 5.0, y: c.y - slant.y * 5.0 } <> " L" <> at { x: c.x + slant.x * 5.0, y: c.y + slant.y * 5.0 }
+        in
+          stroke (-2.0) <> " " <> stroke 2.0
+      backward = e.course == Backward
+      drawn =
+        if backward then Array.intercalate " " (Array.mapMaybe (\index -> arrow <$> placeAt ((toNumber index + 0.5) * whole / toNumber count)) (Array.range 0 (count - 1)))
+        else Array.intercalate " " (Array.fromFoldable (break <$> placeAt (whole / 2.0)))
+    in
+      elem Path
+        [ staticStr "class" (if backward then "flow-direction" else "flow-scale-break")
+        , staticStr "data-edge" (show e.index)
+        , Friendly.d drawn
+        , Friendly.fill "none"
+        , Friendly.stroke ink
+        , Friendly.strokeWidth (if backward then 1.75 else 1.25)
+        , staticStr "stroke-linecap" "round"
+        , staticStr "stroke-linejoin" "round"
+        , staticStr "pointer-events" "none"
+        ]
+        []
+
+  -- the nodes inside an open group's outline: its parts
+  partsOfOpen :: Array Int
+  partsOfOpen = Array.concatMap _.members laid.outlines
+
+  seamsOf :: PlacedNode -> Maybe Seamed
+  seamsOf n = Array.find (\found -> found.node == n.index) dress.seams
+
   gestures pointed =
     [ onClick (decoration.notify Clicked pointed)
     , onMouseEnter (decoration.notify Entered pointed)
@@ -360,10 +523,10 @@ treeLabelled labels decoration laid =
       Nothing -> 0.0
 
   -- an open group: its box takes no gesture, its name does
-  outlineMark :: PlacedOutline -> Tree
-  outlineMark outline =
+  outlineMark :: { run :: Int, outline :: PlacedOutline } -> Tree
+  outlineMark { run, outline } =
     let
-      nameSize = 11.0
+      nameSize = if dress.headings then 12.0 else 11.0
       stripless = outline.header <= 0.0
       nameWidth named = 16.0 + heavier * estimateWidth nameSize named
       -- The name takes gestures through its tab. An outline with no strip
@@ -396,6 +559,7 @@ treeLabelled labels decoration laid =
             , staticStr "data-group" (groupName outline.group)
             , staticStr "data-depth" (show outline.depth)
             ]
+              <> (if dress.headings || run > 0 then [ staticStr "data-run" (show run) ] else [])
               <> buttonOf (PointedGroup outline.group)
           )
           [ elem Rect
@@ -423,14 +587,14 @@ treeLabelled labels decoration laid =
               ]
               []
           , elem Text
-              ( [ staticStr "class" (if upright then "flow-outline-label flow-outline-label-upright" else "flow-outline-label")
+              ( [ staticStr "class" (classes [ "flow-outline-label", if upright then "flow-outline-label-upright" else "", if dress.headings then "flow-group-name" else "" ])
                 , Friendly.x labelX
                 , Friendly.y labelY
                 , Friendly.textAnchor (if upright then "end" else "start")
                 , staticStr "dominant-baseline" "central"
                 , Friendly.fontSize (show nameSize)
-                , Friendly.fontWeight "600"
-                , Friendly.fill quiet
+                , Friendly.fontWeight (if dress.headings then "700" else "600")
+                , Friendly.fill (if dress.headings then ink else quiet)
                 , staticStr "pointer-events" "none"
                 , staticStr "textContent" outline.name
                 ]
@@ -467,7 +631,7 @@ treeLabelled labels decoration laid =
     in
       withBehaviors (gestures (pointedBy e.edge)) $
         elem Path
-          ( [ staticStr "class" (classes [ "flow-edge", kindOf e.route, if backward then "flow-backward" else "", if isBand e then "flow-band" else "flow-hairline", if swept then "flow-swept" else "", line.className ])
+          ( [ staticStr "class" (classes [ "flow-edge", kindOf e.route, if backward then "flow-backward" else "", if isBand e then "flow-band" else "flow-hairline", if swept then "flow-swept" else "", if notToScale e.route then "flow-not-to-scale" else "", line.className ])
             , staticStr "data-edge" (show e.index)
             , staticStr "data-from" (keyName e.edge.from)
             , staticStr "data-to" (keyName e.edge.to)
@@ -487,7 +651,7 @@ treeLabelled labels decoration laid =
                     , Friendly.strokeOpacity (if isBand e then "0.22" else "1")
                     ]
                 )
-              <> (if backward && not (isBand e) then [ staticStr "stroke-dasharray" "5 4" ] else [])
+              <> (if notToScale e.route then [ staticStr "stroke-dasharray" "3 2" ] else if backward && not (isBand e) then [ staticStr "stroke-dasharray" "5 4" ] else [])
               <> buttonOf (pointedBy e.edge)
           )
           []
@@ -533,18 +697,23 @@ treeLabelled labels decoration laid =
       unlabelled = case besideLeast of
         Just least -> acrossFlow < least
         Nothing -> false
+      -- a part of an open group, whose label is subordinate to the group's
+      -- name; and a closed group no group is open over, whose name is a
+      -- heading over the start of its bar (left to right)
+      isPart = dress.headings && Array.elem n.index partsOfOpen
+      isHeaded = dress.headings && laid.direction == LeftToRight && isJust (groupOf n.node.key) && not (Array.elem n.index partsOfOpen)
       -- a label beside its bar, on the paper
       besideLabel =
         let
           long = heavier * estimateWidth 12.0 mark.label
           plain className anchor x y = elem Text
-            [ staticStr "class" className
+            [ staticStr "class" (classes [ className, if isPart then "flow-part-name" else "", if isHeaded then "flow-group-name" else "" ])
             , Friendly.x x
             , Friendly.y y
             , Friendly.textAnchor anchor
             , staticStr "dominant-baseline" "central"
-            , Friendly.fontSize "12"
-            , Friendly.fontWeight "600"
+            , Friendly.fontSize (if isPart then "11" else "12")
+            , Friendly.fontWeight (if isPart then "400" else if isHeaded then "700" else "600")
             , Friendly.fill ink
             , staticStr "pointer-events" "none"
             , staticStr "textContent" mark.label
@@ -552,6 +721,7 @@ treeLabelled labels decoration laid =
             []
         in
           case laid.direction of
+            LeftToRight | isHeaded -> plain "flow-label flow-label-heading" "start" n.box.x (n.box.y - 5.0)
             LeftToRight ->
               if n.box.x + n.box.width + 6.0 + long <= laid.width then plain "flow-label flow-label-beside" "start" (n.box.x + n.box.width + 6.0) middle
               else plain "flow-label flow-label-beside" "end" (n.box.x - 6.0) middle
@@ -559,7 +729,7 @@ treeLabelled labels decoration laid =
               if n.box.y >= 16.0 then plain "flow-label flow-label-beside" "middle" (n.box.x + n.box.width / 2.0) (n.box.y - 8.0)
               else plain "flow-label flow-label-beside" "middle" (n.box.x + n.box.width / 2.0) (n.box.y + n.box.height + 9.0)
       written = case n.words of
-        Nothing | isJust besideLeast -> { lines: if unlabelled then [] else [ besideLabel ], first: middle }
+        Nothing | isJust besideLeast -> { lines: if unlabelled && not isHeaded then [] else [ besideLabel ], first: middle }
         Nothing -> { lines: [ text "flow-label" setting.anchor (setting.x 13.0) middle "12" "600" mark.label ], first: middle }
         Just set ->
           let
@@ -605,6 +775,39 @@ treeLabelled labels decoration laid =
               []
           ]
         _ -> []
+      -- a closed group's seams: a line of paper across the bar where two
+      -- parts divide, and a wall of ink beside a part that only receives
+      -- (on the side nothing leaves by) or only gives (on the side nothing
+      -- enters by)
+      seamMarks = case seamsOf n of
+        Nothing -> []
+        Just seamed ->
+          let
+            flat = laid.direction == LeftToRight
+            strip className from to before after extra = elem Rect
+              ( [ staticStr "class" className
+                , Friendly.x (if flat then before else n.box.x + from)
+                , Friendly.y (if flat then n.box.y + from else before)
+                , Friendly.width (if flat then after - before else to - from)
+                , Friendly.height (if flat then to - from else after - before)
+                , staticStr "pointer-events" "none"
+                ]
+                  <> extra
+              )
+              []
+            near = if flat then n.box.x else n.box.y
+            far = if flat then n.box.x + n.box.width else n.box.y + n.box.height
+            divisions = Array.drop 1 seamed.parts <#> \part -> strip "flow-seam" (part.from - 0.75) (part.from + 0.75) near far [ Friendly.fill paper ]
+            walls = seamed.parts # Array.mapMaybe \part -> part.only <#> \only ->
+              let
+                inset = min 1.5 ((part.to - part.from) / 4.0)
+                side = case only of
+                  OnlyReceives -> { before: far + 2.0, after: far + 5.0, name: "receives" }
+                  OnlyGives -> { before: near - 5.0, after: near - 2.0, name: "gives" }
+              in
+                strip "flow-only" (part.from + inset) (part.to - inset) side.before side.after [ Friendly.fill ink, staticStr "data-only" side.name, staticStr "data-part" part.name ]
+          in
+            divisions <> walls
       note = case mark.note of
         Just words -> [ text "flow-note" "end" (n.box.x + n.box.width - 10.0) written.first "9" "500" words ]
         Nothing -> []
@@ -613,7 +816,7 @@ treeLabelled labels decoration laid =
           { drawnClass: "flow-drawn"
           , parts: [ elem Group [ staticStr "class" "flow-inside", staticStr "transform" ("translate(" <> show n.box.x <> "," <> show n.box.y <> ")") ] [ inside ] ]
           }
-        Nothing -> { drawnClass: "", parts: [ box ] <> swatch <> written.lines <> note }
+        Nothing -> { drawnClass: "", parts: [ box ] <> swatch <> seamMarks <> written.lines <> note }
     in
       withBehaviors (gestures (PointedElement n.node.key)) $
         elem Group
