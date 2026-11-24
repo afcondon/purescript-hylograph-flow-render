@@ -7,7 +7,10 @@ import Prelude
 import Data.Array.NonEmpty as NonEmptyArray
 import Effect (Effect)
 import Effect.Console (log)
-import Hylograph.Flow.Render.Measures (Drawn, crossings)
+import Data.Array as Array
+import Data.Number (abs)
+import Hylograph.Flow.Render.Engine (Direction(..))
+import Hylograph.Flow.Render.Measures (Band, Banded, Drawn, againstTheFlow, crossings, overlaps, overlapsInOneColour, pictureProportion, proportions, squat, thresholds)
 import Hylograph.Flow.Render.Route (Ink(..), Piece(..), Point, Route(..), flatten)
 import Test.Render.Fixtures (expect)
 
@@ -78,8 +81,92 @@ turningOnALine through =
   , outlines: []
   }
 
+-- ---------------------------------------------------------------------------
+-- ribbons made by hand, for the measures of legibility
+-- ---------------------------------------------------------------------------
+
+near :: Number -> Number -> Boolean
+near a b = abs (a - b) < 1.0e-6
+
+band :: Int -> String -> Number -> Array Point -> Band
+band edge colour breadth points = { edge, from: -1, to: -1, colour, breadth, ink: breadth, swept: true, points }
+
+picture :: Array Band -> Banded
+picture bands = { direction: LeftToRight, width: 300.0, height: 100.0, bands }
+
+-- a level band 20 broad, from 0 to 100 along the flow at 50 across it: its
+-- ink is the rectangle from 40 to 60
+level :: String -> Band
+level colour = band 0 colour 20.0 [ { x: 0.0, y: 50.0 }, { x: 100.0, y: 50.0 } ]
+
+-- a band 20 broad that falls 100 in a run of 100: swept, its ink is the
+-- parallelogram between y = x - 10 and y = x + 10. With the level band it
+-- has in common the points where |y - 50| <= 10 and |y - x| <= 10: a
+-- parallelogram 20 along the flow and 20 across it, 400 square pixels.
+falling :: String -> Band
+falling colour = band 1 colour 20.0 [ { x: 0.0, y: 0.0 }, { x: 100.0, y: 100.0 } ]
+
+-- a level band beside the first, touching it all the way: from 60 to 80
+beside :: String -> Band
+beside colour = band 2 colour 20.0 [ { x: 0.0, y: 70.0 }, { x: 100.0, y: 70.0 } ]
+
+-- a level band half over the first: from 50 to 70, so 10 by 100 in common
+halfOver :: String -> Band
+halfOver colour = band 3 colour 20.0 [ { x: 0.0, y: 60.0 }, { x: 100.0, y: 60.0 } ]
+
+-- the same falling band drawn as a stroke along its line: square to the
+-- line, so across the flow it is 20 times the square root of 2 broad, and
+-- with the level band (a strip 20 deep) it has 20 * 20 * sqrt 2 in common
+stroked :: String -> Band
+stroked colour = (falling colour) { swept = false }
+
+-- a ribbon that goes out 30, comes back 130 under itself, and turns in:
+-- the unfolding engine's turned-back ribbon, squared off
+turnedBack :: Band
+turnedBack = (band 4 "ink" 6.0 [ { x: 200.0, y: 10.0 }, { x: 230.0, y: 10.0 }, { x: 230.0, y: 90.0 }, { x: 100.0, y: 90.0 }, { x: 100.0, y: 10.0 }, { x: 130.0, y: 10.0 } ]) { swept = false }
+
 suite :: Effect Unit
 suite = do
+  log "render: the measures of legibility (0.7), on ribbons made by hand"
+  log ("  thresholds: " <> show thresholds)
+  let
+    crossed = overlaps (picture [ level "red", falling "red" ])
+    areaOf found = Array.head found <#> _.area
+  expect "a level band and a falling band, each 20 broad, cross once and have 400 square pixels in common"
+    (map (\found -> { one: found.one, other: found.other, crossings: found.crossings }) crossed == [ { one: 0, other: 1, crossings: 1 } ] && map (near 400.0) (areaOf crossed) == pure true)
+  expect "in one colour, that is one overlap a reader cannot follow" (Array.length (overlapsInOneColour (picture [ level "red", falling "red" ])) == 1)
+  expect "in two colours, it is an overlap still, and none in one colour"
+    (Array.length (overlaps (picture [ level "red", falling "blue" ])) == 1 && Array.null (overlapsInOneColour (picture [ level "red", falling "blue" ])))
+  expect "two bands side by side that touch all the way do not overlap" (Array.null (overlaps (picture [ level "red", beside "red" ])))
+  expect "a band half over another, never crossing it, overlies it: 1000 square pixels, no crossing"
+    (let found = overlaps (picture [ level "red", halfOver "red" ]) in map (near 1000.0) (areaOf found) == pure true && map _.crossings found == [ 0 ])
+  expect "four bands: every pair overlaps but the level one and the one beside it, which touch (the one half over the first is half over the one beside it too)"
+    (map (\found -> [ found.one, found.other ]) (overlaps (picture [ level "a", falling "a", beside "a", halfOver "a" ])) == [ [ 0, 1 ], [ 0, 3 ], [ 1, 2 ], [ 1, 3 ], [ 2, 3 ] ])
+  expect "a stroked band is square to its line: 20 broad on a slope of one in one it covers 400 times the square root of 2 of the level band"
+    (map (near (400.0 * 1.4142135623730951)) (areaOf (overlaps (picture [ level "red", stroked "red" ]))) == pure true)
+  let
+    shapes = proportions (picture
+      [ band 0 "a" 60.0 [ { x: 0.0, y: 50.0 }, { x: 100.0, y: 50.0 } ]
+      , band 1 "a" 10.0 [ { x: 0.0, y: 10.0 }, { x: 100.0, y: 90.0 } ]
+      , band 2 "a" 10.0 [ { x: 0.0, y: 10.0 }, { x: 100.0, y: 30.0 } ]
+      , band 3 "a" 50.0 [ { x: 0.0, y: 10.0 }, { x: 100.0, y: 10.0 } ]
+      ])
+  expect "a ribbon's run, breadth and travel are read from its line: 100 along, 60 broad, level; 100 along, 10 broad, 80 across; 100, 10, 20; 100, 50, level"
+    (map (\found -> [ found.run, found.breadth, found.travel ]) shapes == [ [ 100.0, 60.0, 0.0 ], [ 100.0, 10.0, 80.0 ], [ 100.0, 10.0, 20.0 ], [ 100.0, 50.0, 0.0 ] ])
+  expect "the ribbons under 2 to 1: the one too broad for its run (1.67 to 1) and the one too steep (1.25 to 1); not the one at 5 to 1, nor the one at exactly 2 to 1"
+    (map _.edge (squat (picture
+      [ band 0 "a" 60.0 [ { x: 0.0, y: 50.0 }, { x: 100.0, y: 50.0 } ]
+      , band 1 "a" 10.0 [ { x: 0.0, y: 10.0 }, { x: 100.0, y: 90.0 } ]
+      , band 2 "a" 10.0 [ { x: 0.0, y: 10.0 }, { x: 100.0, y: 30.0 } ]
+      , band 3 "a" 50.0 [ { x: 0.0, y: 10.0 }, { x: 100.0, y: 10.0 } ]
+      ])) == [ 0, 1 ])
+  expect "a picture 300 along the flow and 100 across it is 3 to 1; stood on end, the same picture is 3 to 1 still"
+    (near 3.0 (pictureProportion (picture [])) && near 3.0 (pictureProportion { direction: TopDown, width: 100.0, height: 300.0, bands: [] }))
+  expect "of a forward ribbon and one that turns back under itself, only the second runs against the flow"
+    (againstTheFlow (picture [ level "a", turnedBack ]) == [ 4 ])
+  expect "the turned-back ribbon's run is all its line reaches along the flow (130), its travel all it reaches across (80)"
+    (map (\found -> [ found.run, found.travel ]) (proportions (picture [ turnedBack ])) == [ [ 130.0, 80.0 ] ])
+
   log "render: crossings, mended (0.7): a crossing at a point where both lines are cut into pieces"
   expect "two neighbours that change places between two tiers cross once" (crossings changingPlaces == 1)
   expect "the same two going straight on do not cross" (crossings goingStraight == 0)

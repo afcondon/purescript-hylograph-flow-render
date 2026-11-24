@@ -63,6 +63,34 @@
 -- |   to report (`Placed`), and `unplaced` counts them.
 -- |
 -- | Time to lay out is not here: it is measured by whoever runs the layout.
+-- |
+-- | THE MEASURES OF LEGIBILITY (0.7). The measures above score a drawing as
+-- | a graph. These score it as something a general reader has to follow,
+-- | by four heuristics that are **guesses** (Andrew's word) and are here to
+-- | be calibrated; the numbers they are held against are `thresholds`, in
+-- | this one place. They need what a `Drawn` has not: how broad each ribbon
+-- | is, what colour it is drawn in, and which way the flow runs. That is a
+-- | `Banded` (`bandedOf` makes one of a layout and a colour for each edge;
+-- | it can be made by hand).
+-- |
+-- | - `overlaps`: the pairs of ribbons that cross (their middle lines, by
+-- |   `crossings`' rule) or overlie one another (their ink has more than
+-- |   `thresholds.overlap` square pixels in common), each with that area.
+-- |   `overlapsInOneColour` are those drawn in one colour: the ones a
+-- |   reader cannot follow through. The area is exact where both ribbons
+-- |   are swept bands (flat across the flow: a forward ribbon as the tree's
+-- |   `Swept` draws it); a ribbon drawn as a stroke (turned back, or a
+-- |   hairline) is taken piece by piece and its corners counted twice, so
+-- |   its areas are a little over.
+-- | - `proportions`: of each ribbon, its run along the flow, its breadth
+-- |   (the data's, not the ink's), and how far it travels across the flow;
+-- |   `squat` are those whose run is less than `thresholds.proportion`
+-- |   times its breadth, or times its travel.
+-- | - `pictureProportion`: the picture's length along the flow over its
+-- |   breadth across it.
+-- | - `againstTheFlow`: the ribbons that anywhere run backward along the
+-- |   flow by more than `thresholds.against` pixels in all, read from
+-- |   their lines and not from what the engine says of them.
 module Hylograph.Flow.Render.Measures
   ( Drawn
   , DrawnEdge
@@ -84,6 +112,19 @@ module Hylograph.Flow.Render.Measures
   , unrouted
   , unplaced
   , skin
+  , Thresholds
+  , thresholds
+  , Band
+  , Banded
+  , bandedOf
+  , Overlap
+  , overlaps
+  , overlapsInOneColour
+  , Proportion
+  , proportions
+  , squat
+  , pictureProportion
+  , againstTheFlow
   ) where
 
 import Prelude
@@ -96,8 +137,8 @@ import Data.Number (abs, atan2, pi)
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Hylograph.Flow (Projection)
-import Hylograph.Flow.Render.Engine (Box, Layout)
-import Hylograph.Flow.Render.Route (Point, cross, distance, flatten, turning)
+import Hylograph.Flow.Render.Engine (Box, Course(..), Direction(..), Layout, PlacedEdge)
+import Hylograph.Flow.Render.Route (Ink(..), Point, Route(..), cross, distance, flatten, turning)
 
 -- | `from`, `to`: the places of the edge's two nodes in `nodes`.
 type DrawnEdge = { from :: Int, to :: Int, points :: Array Point }
@@ -396,3 +437,180 @@ strangersIn drawn = sum $ drawn.outlines <#> \outline ->
 
 unrouted :: Drawn -> Int
 unrouted drawn = Array.length (Array.filter (\drawnEdge -> Array.length drawnEdge.points < 2) drawn.edges)
+
+-- ---------------------------------------------------------------------------
+-- legibility (0.7)
+-- ---------------------------------------------------------------------------
+
+-- | What the measures of legibility are held against, and what the engines
+-- | and the tree take from them. Guesses, to be calibrated.
+-- |
+-- | - `proportion`: a ribbon, and a picture, should be at least this many
+-- |   times as long along the flow as it is broad across it (and a ribbon
+-- |   that many times as long as it travels across).
+-- | - `overlap`: two ribbons overlie one another when their ink has more
+-- |   than this in common, in square pixels.
+-- | - `against`: a ribbon runs against the flow when it runs backward by
+-- |   more than this, in pixels.
+-- | - `hair`: a ribbon less broad than this, in pixels, cannot be seen; the
+-- |   unfolding engine draws it this broad and says it is not to scale.
+-- | - `nameReach`: an open group's name should be within this of where its
+-- |   closed bar's name was, in pixels.
+type Thresholds = { proportion :: Number, overlap :: Number, against :: Number, hair :: Number, nameReach :: Number }
+
+thresholds :: Thresholds
+thresholds = { proportion: 2.0, overlap: 4.0, against: 1.0, hair: 1.0, nameReach: 80.0 }
+
+-- | A ribbon as it is drawn. `edge`: its index in the layout. `from`,
+-- | `to`: the places of its two nodes among the layout's nodes (-1 where it
+-- | has none). `breadth`: the data's. `ink`: how broad it is drawn.
+-- | `swept`: drawn flat across the flow (a band going forward), not as a
+-- | stroke along its line.
+type Band = { edge :: Int, from :: Int, to :: Int, colour :: String, breadth :: Number, ink :: Number, swept :: Boolean, points :: Array Point }
+
+type Banded = { direction :: Direction, width :: Number, height :: Number, bands :: Array Band }
+
+-- | A layout's ribbons as drawn, each in the colour it is given. A band
+-- | going forward is taken as swept, as the unfolding pages draw it
+-- | (`Tree.Swept`); a route that is no ribbon is a line 1.25 broad
+-- | (`Tree.hairline`).
+bandedOf :: forall wire. (PlacedEdge wire -> String) -> Layout wire -> Banded
+bandedOf colourOf laid =
+  { direction: laid.direction
+  , width: laid.width
+  , height: laid.height
+  , bands: Array.zipWith
+      ( \placed drawnEdge ->
+          let
+            found = case placed.route of
+              Ribbon ribbon -> case ribbon.ink of
+                Band -> { breadth: ribbon.breadth, ink: ribbon.breadth, band: true }
+                Hairline stroke -> { breadth: ribbon.breadth, ink: stroke, band: false }
+                Least stroke -> { breadth: ribbon.breadth, ink: stroke, band: false }
+              _ -> { breadth: 0.0, ink: 1.25, band: false }
+          in
+            { edge: placed.index, from: drawnEdge.from, to: drawnEdge.to, colour: colourOf placed, breadth: found.breadth, ink: found.ink, swept: found.band && placed.course == Forward, points: drawnEdge.points }
+      )
+      laid.edges
+      (drawnOf laid).edges
+  }
+
+along :: Direction -> Point -> Number
+along direction point = case direction of
+  LeftToRight -> point.x
+  TopDown -> point.y
+
+athwart :: Direction -> Point -> Number
+athwart direction point = case direction of
+  LeftToRight -> point.y
+  TopDown -> point.x
+
+-- | A ribbon's ink as four-sided pieces, one to each straight piece of its
+-- | line: flat across the flow where it is swept, square to the line where
+-- | it is stroked. Each with its corners in one sense of turning.
+quadsOf :: Direction -> Band -> Array (Array Point)
+quadsOf direction band = Array.mapMaybe identity (Array.zipWith quad band.points (Array.drop 1 band.points))
+  where
+  half = band.ink / 2.0
+  quad p q =
+    let
+      long = distance p q
+      set =
+        if band.swept then case direction of
+          LeftToRight -> { x: 0.0, y: half }
+          TopDown -> { x: half, y: 0.0 }
+        else if long > 0.0 then { x: -(q.y - p.y) / long * half, y: (q.x - p.x) / long * half }
+        else { x: 0.0, y: 0.0 }
+      corners = [ { x: p.x - set.x, y: p.y - set.y }, { x: q.x - set.x, y: q.y - set.y }, { x: q.x + set.x, y: q.y + set.y }, { x: p.x + set.x, y: p.y + set.y } ]
+      signed = twice corners
+    in
+      if abs signed < 1.0e-9 then Nothing else Just (if signed < 0.0 then Array.reverse corners else corners)
+
+-- | Twice the signed area of a polygon.
+twice :: Array Point -> Number
+twice corners = sum (Array.zipWith (\p q -> p.x * q.y - q.x * p.y) corners (Array.drop 1 corners <> Array.take 1 corners))
+
+-- | What two convex polygons of one sense of turning have in common, in
+-- | square pixels (Sutherland and Hodgman's clipping, one side at a time).
+common :: Array Point -> Array Point -> Number
+common subject clipper = abs (twice (foldl cut subject (Array.zip clipper (Array.drop 1 clipper <> Array.take 1 clipper)))) / 2.0
+  where
+  cut polygon (Tuple a b) = Array.concat (Array.zipWith (step a b) polygon (Array.drop 1 polygon <> Array.take 1 polygon))
+  step a b p q =
+    let
+      sideP = cross a b p
+      sideQ = cross a b q
+      meet = let t = sideP / (sideP - sideQ) in { x: p.x + t * (q.x - p.x), y: p.y + t * (q.y - p.y) }
+    in
+      if sideP >= 0.0 && sideQ >= 0.0 then [ q ]
+      else if sideP >= 0.0 then [ meet ]
+      else if sideQ >= 0.0 then [ meet, q ]
+      else []
+
+-- | Two ribbons that cross or overlie one another. `one`, `other`: their
+-- | edges' indices, the lesser first. `area`: the ink they have in common.
+-- | `crossings`: how many times their middle lines cross.
+type Overlap = { one :: Int, other :: Int, colour :: String, otherColour :: String, area :: Number, crossings :: Int }
+
+overlaps :: Banded -> Array Overlap
+overlaps banded = Array.concat (Array.mapWithIndex (\place band -> Array.mapMaybe (pair band) (Array.drop (place + 1) dressed)) dressed)
+  where
+  dressed = banded.bands <#> \band ->
+    let
+      quads = quadsOf banded.direction band <#> \corners -> { corners, round: extent { nodes: [], edges: [ { from: -1, to: -1, points: corners } ], outlines: [] } }
+    in
+      { band, quads, round: extent { nodes: [], edges: [], outlines: map (\quad -> { box: quad.round, members: [] }) quads } }
+  pair a b =
+    if not (near a.round b.round) then Nothing
+    else
+      let
+        area = sum (a.quads >>= \p -> b.quads <#> \q -> if near p.round q.round then common p.corners q.corners else 0.0)
+        crossed = crossings { nodes: [], edges: [ lineOf a.band, lineOf b.band ], outlines: [] }
+      in
+        if area > thresholds.overlap || crossed > 0 then Just { one: min a.band.edge b.band.edge, other: max a.band.edge b.band.edge, colour: a.band.colour, otherColour: b.band.colour, area, crossings: crossed }
+        else Nothing
+  -- two ribbons of one node keep their node, so that meeting there is no crossing
+  lineOf band = { from: band.from, to: band.to, points: band.points }
+
+-- | The overlaps a reader cannot follow: both ribbons in one colour.
+overlapsInOneColour :: Banded -> Array Overlap
+overlapsInOneColour = Array.filter (\found -> found.colour == found.otherColour) <<< overlaps
+
+-- | A ribbon's shape. `run`: how far its line reaches along the flow.
+-- | `travel`: how far it reaches across it. `byBreadth`, `byTravel`: the
+-- | run over each (as great as can be where there is none of it).
+type Proportion = { edge :: Int, run :: Number, breadth :: Number, travel :: Number, byBreadth :: Number, byTravel :: Number }
+
+proportions :: Banded -> Array Proportion
+proportions banded = banded.bands <#> \band ->
+  let
+    reach by = case Array.uncons (map by band.points) of
+      Just { head, tail } -> let found = foldl (\acc v -> { least: min acc.least v, most: max acc.most v }) { least: head, most: head } tail in found.most - found.least
+      Nothing -> 0.0
+    run = reach (along banded.direction)
+    travel = reach (athwart banded.direction)
+    over n = if n > 0.0 then run / n else 1.0 / 0.0
+  in
+    { edge: band.edge, run, breadth: band.breadth, travel, byBreadth: over band.breadth, byTravel: over travel }
+
+-- | The ribbons too broad, or too steep, for their run: under the
+-- | threshold on either count.
+squat :: Banded -> Array Proportion
+squat = Array.filter (\found -> found.byBreadth < thresholds.proportion || found.byTravel < thresholds.proportion) <<< proportions
+
+-- | The picture's length along the flow over its breadth across it.
+pictureProportion :: Banded -> Number
+pictureProportion banded =
+  let
+    size = { x: banded.width, y: banded.height }
+    across = athwart banded.direction size
+  in
+    if across > 0.0 then along banded.direction size / across else 0.0
+
+-- | The ribbons that run against the flow, by their edges' indices.
+againstTheFlow :: Banded -> Array Int
+againstTheFlow banded = banded.bands # Array.mapMaybe \band ->
+  let
+    back = sum (Array.zipWith (\p q -> max 0.0 (along banded.direction p - along banded.direction q)) band.points (Array.drop 1 band.points))
+  in
+    if back > thresholds.against then Just band.edge else Nothing

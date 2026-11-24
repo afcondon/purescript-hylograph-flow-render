@@ -290,6 +290,7 @@ strokeOf = case _ of
   Ribbon ribbon -> case ribbon.ink of
     Band -> ribbon.breadth
     Hairline stroke -> stroke
+    Least stroke -> stroke
   Polyline _ -> hairline
   Spline _ -> hairline
 

@@ -96,10 +96,15 @@ instance Show Piece where
     Curved curve -> "(Curved " <> show curve <> ")"
 
 -- | How a ribbon is drawn: as broad as it is, or as a line of this stroke
--- | down its middle.
+-- | down its middle. `Least` (0.7) is the one stated exception to breadth
+-- | being data: a ribbon too thin to be seen (its `breadth` is still the
+-- | data's, and still the room it takes on its nodes) is drawn as a line of
+-- | this stroke, *broader than it is*, and is not to scale. The tree marks
+-- | it so, and `Laws.notToScale` lists it.
 data Ink
   = Band
   | Hairline Number
+  | Least Number
 
 derive instance Eq Ink
 
@@ -107,6 +112,7 @@ instance Show Ink where
   show = case _ of
     Band -> "Band"
     Hairline stroke -> "(Hairline " <> show stroke <> ")"
+    Least stroke -> "(Least " <> show stroke <> ")"
 
 data Route
   = Ribbon { from :: Point, pieces :: NonEmptyArray Piece, breadth :: Number, ink :: Ink }
@@ -222,6 +228,7 @@ numbers = case _ of
   inkNumbers = case _ of
     Band -> []
     Hairline stroke -> [ stroke ]
+    Least stroke -> [ stroke ]
 
 -- | A route with x for y at every point: the route of a layout stood on
 -- | end (0.5).
