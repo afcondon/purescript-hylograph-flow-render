@@ -373,7 +373,7 @@ treeLabelled labels decoration laid =
           , elem Rect
               [ staticStr "class" "flow-outline-tab"
               , Friendly.x outline.box.x
-              , Friendly.y (outline.box.y + outline.header / 2.0 - tabHeight / 2.0)
+              , Friendly.y (if outline.header > 0.0 then outline.box.y else outline.box.y - tabHeight / 2.0)
               , Friendly.width tabWidth
               , Friendly.height tabHeight
               , Friendly.fill paper
