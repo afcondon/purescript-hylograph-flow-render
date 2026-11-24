@@ -19,7 +19,7 @@ package:
     caller places), laws and measures of any engine's layout, and one HATS
     tree of it.
   publish:
-    version: 0.4.0
+    version: 0.5.0
     license: MIT
     location:
       githubOwner: afcondon

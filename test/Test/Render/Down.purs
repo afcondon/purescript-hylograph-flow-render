@@ -28,7 +28,7 @@ import Data.Set as Set
 import Effect (Effect)
 import Effect.Console (log)
 import Effect.Ref as Ref
-import Hylograph.Flow (Drawing(..), GroupId(..), ItemId(..), StepId(..), project)
+import Hylograph.Flow (Drawing(..), ElementKey(..), GroupId(..), ItemId(..), StepId(..), project)
 import Hylograph.Flow.Grouping (Grouping(..), collapse)
 import Hylograph.Flow.Render.Engine (Course(..), Direction(..), Engine, Layout, Picture, defaultOutline, engineName, plainPicture, run)
 import Hylograph.Flow.Render.Laws (Law(..), broken, check, faultsOf, strangers, varied)
@@ -36,7 +36,7 @@ import Hylograph.Flow.Render.Route (Piece(..), Route(..))
 import Hylograph.Flow.Render.Route as Route
 import Hylograph.Flow.Render.Sankey (Metrics, Widths(..), defaultMetrics, sankey, sankeyToward)
 import Hylograph.Flow.Render.Text (breadthOf, defaultLettering, heightOf)
-import Hylograph.Flow.Render.Tree (plainDecoration)
+import Hylograph.Flow.Render.Tree (Pointed(..), plainDecoration)
 import Test.Render.Fixtures (chain, drawings, expect, expectNone, quantity, sankeyMetrics, scan, subjects, weighted)
 import Test.Render.Groups as Groups
 import Test.Render.Realized (attribute)
@@ -256,3 +256,27 @@ suite = do
     (brokenBy (onNode "works" \n -> n { box = n.box { y = n.box.y + 11.0 } }) == [ Routed, LayerAlignment ])
   expect "the same layout said to run left to right breaks FlowForward and LayerAlignment: the laws do read the direction"
     (let found = brokenBy (_ { direction = LeftToRight }) in Array.elem FlowForward found && Array.elem LayerAlignment found)
+
+  log "render: buttons for the keyboard"
+  let
+    pressable = plainDecoration
+      { button = case _ of
+          PointedGroup (GroupId name) -> Just ("Close " <> name)
+          PointedElement (StepKey (StepId name)) -> Just ("Open " <> name)
+          _ -> Nothing
+      }
+  let said name marks = map (attribute name) marks
+  case pictureOf pressable oneLaid, pictureOf plainDecoration oneLaid of
+    Right with, Right without -> do
+      expect "a mark the decoration calls a button can be focused, is a button, and is named as the decoration names it; the others are as they were"
+        ( said "aria-label" with.outlines == [ Just "Close G" ]
+            && said "tabindex" with.outlines == [ Just "0" ] && said "role" with.outlines == [ Just "button" ]
+            && Array.sort (Array.catMaybes (said "aria-label" with.nodes)) == [ "Open f", "Open g" ]
+            && Array.length (Array.filter (_ == Just "0") (said "tabindex" with.nodes)) == 2
+            && all (_ == Nothing) (said "tabindex" with.edges)
+        )
+      expect "a plain decoration makes no mark a button"
+        (all (_ == Nothing) (said "tabindex" (without.outlines <> without.nodes <> without.edges)) && all (_ == Nothing) (said "role" (without.outlines <> without.nodes <> without.edges)))
+    Left why, _ -> expect why false
+    _, Left why -> expect why false
+  expectNone "and the tree with buttons still has the marks the layout placed" (structureFaults pressable oneLaid)

@@ -18,7 +18,8 @@
 -- | every edge one unit and draws each as a hairline down the middle of its
 -- | place. The positions come from the same code either way: the Sankey
 -- | layout in `hylograph-layout`, with its lanes for edges that span more
--- | than one layer. The flow runs left to right.
+-- | than one layer. The flow runs left to right (`sankey`), or the way the
+-- | engine is told (`sankeyToward`, 0.5).
 -- |
 -- | That layout does the placing (`DataViz.Layout.Sankey.Whole`): the scale
 -- | is fixed (`unit` pixels to one unit of width, the layers a fixed
@@ -76,6 +77,49 @@
 -- | The cost of doing step 3 afterwards is that the Sankey relaxation does
 -- | not know of the moves, so edges into a group that was moved down slant
 -- | more than they would if the relaxation had made the room itself.
+-- |
+-- | ## Top-down (0.5)
+-- |
+-- | `sankeyToward TopDown` is the same layout stood on end: its layers are
+-- | rows, a node is as broad as the broader of what enters and what leaves
+-- | it, its edges stack along its top and its bottom, and every edge not
+-- | turned back runs down the page. It is made by laying the flow out left
+-- | to right and exchanging x and y at the last, so the placing, the order,
+-- | the lanes and the channels are the left-to-right layout's, and the laws
+-- | it promises are the same three, read by the layout's direction. Four
+-- | things do not survive being stood on end, and are done otherwise:
+-- |
+-- | - **A node's words.** Left to right a node is `nodeBreadth` along the
+-- |   flow, its words are wrapped to that, and it is made taller where they
+-- |   need it. Top-down the words are still wrapped to `nodeBreadth`, which
+-- |   is then the most room a node is given across the flow for its words'
+-- |   sake: a node is as broad as its ribbons, or as its widest line needs
+-- |   where that is more (`Text.breadthOf`), and its ribbons stand in the
+-- |   middle of it. So a thin ribbon under a long name has a node as broad
+-- |   as the name, and two such nodes cannot have their names collide.
+-- | - **How far a node reaches along the flow.** Left to right,
+-- |   `nodeBreadth`. Top-down, as tall as the tallest words of any node in
+-- |   the picture (one height, so that the nodes of a layer are one row);
+-- |   `restHeight` where the picture sets no words.
+-- | - **An outline's strip.** An outline's name is in a strip at the top of
+-- |   its box, either way. Left to right that is across the flow, and the
+-- |   room is made by moving boxes down a column. Top-down it is along the
+-- |   flow, before the outline's first row, and the room is in the gap
+-- |   between layers (and above the first): for each outline one in another,
+-- |   its padding and its strip before, its padding after. Where
+-- |   `layerGap` has not room for what the picture asks, the strip and the
+-- |   padding are both less, in proportion, and `PlacedOutline.header` says
+-- |   what the strip is.
+-- | - **The margins.** Left to right the picture has half a `layerGap`
+-- |   before its first layer and after its last, room for an edge that turns
+-- |   back, whether or not one does (as since 0.1, kept so that no picture
+-- |   moves). Top-down it has only what is used: that room where an edge
+-- |   does turn back, an outline's where there is an outline, and otherwise
+-- |   none, so a picture of forward edges begins at its first row and ends
+-- |   at its last, and a page can stand something directly under it.
+-- |
+-- | The shelf of nodes no edge touches, under the picture left to right, is
+-- | at its right top-down.
 module Hylograph.Flow.Render.Sankey
   ( Widths(..)
   , Metrics
@@ -119,9 +163,11 @@ data Widths wire
   | Sankey (Edge wire -> Number)
 
 -- | `unit`: pixels to one unit of width. `hairline`: the stroke of a plain
--- | edge. `nodeBreadth`: a node's extent along the flow. `layerGap`: between
+-- | edge. `nodeBreadth`: the breadth a node's words are wrapped to; left to
+-- | right it is also the node's extent along the flow. `layerGap`: between
 -- | one layer and the next. `nodeGap`: between two nodes of a layer.
--- | `restHeight`: how tall a node is that no edge gives a height.
+-- | `restHeight`: how far across the flow a node reaches that no edge gives
+-- | an extent; top-down, also how tall every node is where no words are set.
 type Metrics =
   { unit :: Number
   , hairline :: Number

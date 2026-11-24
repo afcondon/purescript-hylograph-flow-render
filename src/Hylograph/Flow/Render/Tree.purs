@@ -46,6 +46,14 @@
 -- | inside only the caller knows how to draw; the tree still places it,
 -- | keys it, and tells its gestures.
 -- |
+-- | The keyboard (0.5): a mark the decoration calls a button
+-- | (`Decoration.button`) can be reached by the Tab key and says what it is
+-- | to a screen reader (`tabindex="0"`, `role="button"`, and the name given
+-- | as its `aria-label`); the others are as they were. HATS tells clicks and
+-- | the pointer and no keys, so pressing a button is the page's to arrange
+-- | once: `Hylograph.Flow.Render.Keys.pressByKeys` makes Enter and Space on
+-- | a focused button a click on it, which is then told as any click is.
+-- |
 -- | Words: where the layout set a node's words (`Picture.words`), those
 -- | lines are drawn, the title's and then the detail's, and the mark's
 -- | `label` is not used; its `note` stands at the right of the first line.
@@ -141,21 +149,25 @@ instance Show Pointed where
 
 -- | `inside` (0.4): a node's inside, drawn by the caller in the node's own
 -- | coordinates, for the nodes it draws; see the module's header.
+-- | `button` (0.5): the marks that are buttons for the keyboard, each with
+-- | the name it is announced by; `Nothing` for a mark that is none.
 type Decoration wire =
   { node :: Node -> Mark
   , edge :: Edge wire -> Line
   , notify :: Gesture -> Pointed -> Effect Unit
   , inside :: Node -> Maybe Tree
+  , button :: Pointed -> Maybe String
   }
 
 -- | Each node under its own label, nothing else said, gestures ignored, no
--- | inside drawn by the caller.
+-- | inside drawn by the caller, no mark a button.
 plainDecoration :: forall wire. Decoration wire
 plainDecoration =
   { node: \node -> { label: node.label, note: Nothing, className: "", colour: Nothing }
   , edge: \_ -> { className: "", colour: Nothing }
   , notify: \_ _ -> pure unit
   , inside: const Nothing
+  , button: const Nothing
   }
 
 -- | A decoration changed by what an overlay knows: of a node, by its key;
@@ -272,6 +284,12 @@ tree decoration laid =
     , onMouseLeave (decoration.notify Left pointed)
     ]
 
+  -- what makes a mark a button for the keyboard, where the decoration
+  -- says it is one
+  buttonOf pointed = case decoration.button pointed of
+    Just name -> [ staticStr "tabindex" "0", staticStr "role" "button", staticStr "aria-label" name ]
+    Nothing -> []
+
   -- an open group: its box takes no gesture, its name does
   outlineMark :: PlacedOutline -> Tree
   outlineMark outline =
@@ -281,10 +299,12 @@ tree decoration laid =
     in
       withBehaviors (gestures (PointedGroup outline.group)) $
         elem Group
-          [ staticStr "class" "flow-outline"
-          , staticStr "data-group" (groupName outline.group)
-          , staticStr "data-depth" (show outline.depth)
-          ]
+          ( [ staticStr "class" "flow-outline"
+            , staticStr "data-group" (groupName outline.group)
+            , staticStr "data-depth" (show outline.depth)
+            ]
+              <> buttonOf (PointedGroup outline.group)
+          )
           [ elem Rect
               [ staticStr "class" "flow-outline-box"
               , Friendly.x outline.box.x
@@ -353,6 +373,7 @@ tree decoration laid =
             , Friendly.strokeOpacity (if isBand e then "0.22" else "1")
             ]
               <> (if backward && not (isBand e) then [ staticStr "stroke-dasharray" "5 4" ] else [])
+              <> buttonOf (pointedBy e.edge)
           )
           []
 
@@ -446,9 +467,11 @@ tree decoration laid =
     in
       withBehaviors (gestures (PointedElement n.node.key)) $
         elem Group
-          [ staticStr "class" (classes [ "flow-node", if isStep then "flow-step" else "flow-item", if isJust n.words then "flow-lettered" else "", drawn.drawnClass, mark.className ])
-          , staticStr "data-key" (keyName n.node.key)
-          ]
+          ( [ staticStr "class" (classes [ "flow-node", if isStep then "flow-step" else "flow-item", if isJust n.words then "flow-lettered" else "", drawn.drawnClass, mark.className ])
+            , staticStr "data-key" (keyName n.node.key)
+            ]
+              <> buttonOf (PointedElement n.node.key)
+          )
           (drawn.parts <> map portMark n.ports)
       where
       portMark :: PlacedPort -> Tree

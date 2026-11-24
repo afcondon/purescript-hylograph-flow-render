@@ -223,6 +223,7 @@ dressed notify =
       }
   , notify
   , inside: const Nothing
+  , button: const Nothing
   }
 
 quiet :: Gesture -> Pointed -> Effect Unit
