@@ -51,7 +51,13 @@
 -- |
 -- | The placing is then a packing with no relaxation in it. The tiers are
 -- | the Sankey layout's of the cut's own flow (its layers, its lanes for
--- | long ribbons, its channels for ribbons turned back, its shelf); across
+-- | long ribbons, its channels for ribbons turned back, its shelf), with
+-- | one difference from the Sankey engine: **a node that feeds nothing
+-- | stands in the last tier** (that layout's `Justify`), where the Sankey
+-- | engine stands it just after what feeds it. The ends of a flow are
+-- | commonly one group (its sinks, its fates), and a group whose parts are
+-- | in one tier opens Held; left where their feeders put them, the sinks
+-- | of a real flow are tiers apart and their group spans the picture. Across
 -- | the flow, the top-level blocks are taken in rank order and each is set
 -- | as near the start as what stands before it in the tiers it spans
 -- | allows. An open group spans every tier from its first part's to its
@@ -173,10 +179,11 @@ groupOfKey = case _ of
   ItemKey (GroupItem group) -> Just group
   _ -> Nothing
 
--- | The Sankey layout's configuration, as the Sankey engine gives it.
+-- | The Sankey layout's configuration: the Sankey engine's, but for where
+-- | a node that feeds nothing stands (see the header).
 configOf :: Number -> Metrics -> SankeyConfig
 configOf extent metrics = (defaultSankeyConfig 1000.0 1000.0)
-  { alignment = Left
+  { alignment = Justify
   , linkColorMode = StaticColor ""
   , nodeWidth = extent
   , nodePadding = metrics.nodeGap

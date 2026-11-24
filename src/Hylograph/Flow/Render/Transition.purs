@@ -56,6 +56,7 @@ import Data.Foldable (all, foldl)
 import Data.Int (floor, toNumber)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Number (abs)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Ref as Ref
@@ -84,7 +85,10 @@ stages before after = Array.filter moves case Array.null opening, Array.null clo
   opening = opened before after
   closing = opened after before
 
-  moves stage = not (all identity (Array.zipWith (\a b -> a.box == b.box) stage.from.nodes stage.to.nodes))
+  -- by more than a millionth of a pixel: two sums of the same breadths
+  -- taken in different orders are not one number
+  moves stage = not (all identity (Array.zipWith (\a b -> near a.box.x b.box.x && near a.box.y b.box.y && near a.box.width b.box.width && near a.box.height b.box.height) stage.from.nodes stage.to.nodes))
+  near a b = abs (a - b) <= 1.0e-6
 
 -- | The two stages of opening: from the layout with the groups shut to the
 -- | layout with them open.
