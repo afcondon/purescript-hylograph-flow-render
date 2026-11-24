@@ -117,6 +117,7 @@ module Hylograph.Flow.Render.Measures
   , Band
   , Banded
   , bandedOf
+  , inkOf
   , Overlap
   , overlaps
   , overlapsInOneColour
@@ -509,7 +510,12 @@ athwart direction point = case direction of
 -- | line: flat across the flow where it is swept, square to the line where
 -- | it is stroked. Each with its corners in one sense of turning.
 quadsOf :: Direction -> Band -> Array (Array Point)
-quadsOf direction band = Array.mapMaybe identity (Array.zipWith quad band.points (Array.drop 1 band.points))
+quadsOf = inkOf
+
+-- | The same, by its public name: the corners of a ribbon's ink, piece by
+-- | piece, for a law that the ink is inside the picture.
+inkOf :: Direction -> Band -> Array (Array Point)
+inkOf direction band = Array.mapMaybe identity (Array.zipWith quad band.points (Array.drop 1 band.points))
   where
   half = band.ink / 2.0
   quad p q =

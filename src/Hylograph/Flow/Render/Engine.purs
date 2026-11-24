@@ -339,6 +339,8 @@ scaledBreadth scaling units = max scaling.least (scaling.pixelsPerUnit * (if isF
 -- |   as broad as its broader side, not exactly: the unfolding engine's
 -- |   closed group is as broad as the most of its inside that is ever
 -- |   abreast, which can be more than crosses its boundary.
+-- | - `StaysWithin` (0.7): the ink of every route is inside the picture,
+-- |   a ribbon turned back and broad among them.
 data Promise wire
   = FlowsForward
   | LayersAligned
@@ -347,6 +349,7 @@ data Promise wire
   | KeepsFixed
   | WidthsScaled (Scaling wire)
   | WidthsCarried (Conservation wire)
+  | StaysWithin
 
 -- | A layout engine: what it is called, what it promises of every layout it
 -- | makes, and the making.

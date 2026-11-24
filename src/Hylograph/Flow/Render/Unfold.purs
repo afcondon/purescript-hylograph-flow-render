@@ -134,6 +134,7 @@ import DataViz.Layout.Sankey.Whole (Sizing(..), WholeLayout, computeWholeLayout)
 import Hylograph.Flow (Edge, ElementKey(..), GroupId, ItemId(..), Projection, StepId(..))
 import Hylograph.Flow.Grouping (Grouping(..))
 import Hylograph.Flow.Render.Engine (Course(..), Direction(..), Engine(..), Layout, Picture, Promise(..), openPaths)
+import Hylograph.Flow.Render.Measures (thresholds)
 import Hylograph.Flow.Render.Route (Ink(..), Piece(..), Point, Route(..))
 import Hylograph.Flow.Render.Sankey (Metrics, Widths(..), stoodOnEnd, widthOf)
 
@@ -372,7 +373,7 @@ unfoldingBy planned direction metrics widths whole = Engine
   { name: case direction of
       LeftToRight -> "unfolding"
       TopDown -> "unfolding, top-down"
-  , promises: [ FlowsForward, LayersAligned, WidthsCarried { pixelsPerUnit: metrics.unit, unitsOf: widthOf widths } ]
+  , promises: [ FlowsForward, LayersAligned, WidthsCarried { pixelsPerUnit: metrics.unit, unitsOf: widthOf widths }, StaysWithin ]
   , layout: laidOut planned direction metrics widths whole
   }
 
@@ -408,7 +409,7 @@ laidOut planned direction metrics widths whole given projection = case direction
     , nodes: Array.sortWith _.index (layered <> stood <> shelved)
     , edges: Array.sortWith _.index (forward <> backward)
     , outlines
-    , width: lead + trail + foldl max (foldl (\acc n -> max acc n.x1) placed.chart.x1 placed.isolated) (map (\n -> n.box.x - lead + n.box.width) stood)
+    , width: lead + trail + chartEnd
     , height: max (bottom + footroom) (if Array.null boxes then foldl (\acc n -> max acc (n.y1 + sink)) 0.0 placed.isolated else placed.extent.y1 + sink)
     }
 
@@ -638,10 +639,21 @@ laidOut planned direction metrics widths whole given projection = case direction
     in
       { padding: given.outline.padding * share, header: given.outline.header * share }
 
-  lead = case direction of
+  -- how far the chart reaches along the flow, before the margins
+  chartEnd :: Number
+  chartEnd = foldl max (foldl (\acc n -> max acc n.x1) placed.chart.x1 placed.isolated) (strays <#> \index -> toNumber (strayTier index) * pitch + extent)
+
+  -- room for the turns of the ribbons turned back, so that every one of
+  -- them is inside the picture (the law `Within`, which since 0.7 is a
+  -- law of routes too): before the first tier for a turn into a node,
+  -- after the last for a turn out of one
+  backLead = foldl (\most routed -> max most (outreach routed.backEdge.index - routed.backEdge.x1)) 0.0 placed.backEdges
+  backTrail = foldl (\most routed -> max most (routed.backEdge.x0 + outreach routed.backEdge.index - chartEnd)) 0.0 placed.backEdges
+
+  lead = max backLead case direction of
     LeftToRight -> turn
     TopDown -> max (if turnsBack then turn else 0.0) (if outlined then toNumber deepest * (along.padding + along.header) + 2.0 else 0.0)
-  trail = case direction of
+  trail = max backTrail case direction of
     LeftToRight -> turn
     TopDown -> max (if turnsBack then turn else 0.0) (if outlined then toNumber deepest * along.padding + 2.0 else 0.0)
 
@@ -750,7 +762,7 @@ laidOut planned direction metrics widths whole given projection = case direction
         pure
           { index: r.index
           , edge
-          , route: Ribbon { from: start.from, pieces, breadth: breadthOfEdge place, ink }
+          , route: Ribbon { from: start.from, pieces, breadth: breadthOfEdge place, ink: inkOf place }
           , course: Forward
           }
     )
@@ -759,10 +771,24 @@ laidOut planned direction metrics widths whole given projection = case direction
   curve :: Point -> Point -> Piece
   curve from to = let middle = (from.x + to.x) / 2.0 in Curved { leaving: { x: middle, y: from.y }, arriving: { x: middle, y: to.y }, to }
 
-  ink :: Ink
-  ink = case widths of
+  -- a ribbon too thin to see is drawn at a least breadth, not to scale
+  -- (the one exception to breadth being data: `Laws.notToScale`)
+  inkOf :: Int -> Ink
+  inkOf place = case widths of
     Plain -> Hairline metrics.hairline
-    Sankey _ -> Band
+    Sankey _ -> if breadthOfEdge place < thresholds.hair then Least thresholds.hair else Band
+
+  -- how far a ribbon turned back swings out beyond a node's side as it
+  -- turns: far enough that its inner edge does not fold over its node
+  -- (a stroke round a turn tighter than itself is a blot)
+  swing :: Int -> Number
+  swing place = max reach (0.7 * breadthOfEdge place)
+
+  -- how far its ink then reaches beyond that side: three quarters of the
+  -- swing (where a cubic with both controls at the swing turns), and half
+  -- its breadth
+  outreach :: Int -> Number
+  outreach place = 0.75 * swing place + max (breadthOfEdge place) thresholds.hair / 2.0 + 1.0
 
   interleave :: forall a. Array a -> Array a -> Array a
   interleave xs ys = Array.concat (Array.zipWith (\x y -> [ x, y ]) xs ys) <> Array.drop (Array.length ys) xs
@@ -774,17 +800,18 @@ laidOut planned direction metrics widths whole given projection = case direction
       start = shift { x: routed.backEdge.x0, y: fromMaybe 0.0 (Map.lookup routed.backEdge.index leavingAt) }
       end = shift { x: routed.backEdge.x1, y: fromMaybe 0.0 (Map.lookup routed.backEdge.index enteringAt) }
       channel = routed.channel + sink
+      out = swing routed.backEdge.index
     pure
       { index: r.index
       , edge
       , route: Ribbon
           { from: start
-          , pieces: NonEmptyArray.cons' (Curved { leaving: { x: start.x + reach, y: start.y }, arriving: { x: start.x + reach, y: channel }, to: { x: start.x, y: channel } })
+          , pieces: NonEmptyArray.cons' (Curved { leaving: { x: start.x + out, y: start.y }, arriving: { x: start.x + out, y: channel }, to: { x: start.x, y: channel } })
               [ Straight { x: end.x, y: channel }
-              , Curved { leaving: { x: end.x - reach, y: channel }, arriving: { x: end.x - reach, y: end.y }, to: end }
+              , Curved { leaving: { x: end.x - out, y: channel }, arriving: { x: end.x - out, y: end.y }, to: end }
               ]
           , breadth: breadthOfEdge routed.backEdge.index
-          , ink
+          , ink: inkOf routed.backEdge.index
           }
       , course: Backward
       }

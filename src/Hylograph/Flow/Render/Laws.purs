@@ -69,6 +69,16 @@
 -- |
 -- | - `Carried` (`WidthsCarried`, 0.6): as `Conservation`, but the node is
 -- |   at least as broad as its broader side, not exactly.
+-- | - `InkWithin` (`StaysWithin`, 0.7): the ink of every route is inside
+-- |   the picture: a ribbon as broad as it is drawn, flat across the flow
+-- |   where it goes forward as a band and square to its line otherwise
+-- |   (`Measures.inkOf`), to within half a pixel. The general law `Within`
+-- |   says nothing of routes, which is how a broad ribbon turned back,
+-- |   stroked round a turn tighter than its own breadth, ran off the
+-- |   picture unreported until 0.7. It is a promise and not part of
+-- |   `Within` because the Sankey engine does not keep it (its turns are
+-- |   of one size whatever the ribbon's breadth), and its layouts are not
+-- |   changed here.
 -- |
 -- | `check engine picture projection layout` is the general laws and
 -- | exactly the engine's promises. A fault says which law it is of (`Law`,
@@ -92,6 +102,7 @@ module Hylograph.Flow.Render.Laws
   , faults
   , layoutFaults
   , strangers
+  , notToScale
   , acyclic
   , varied
   , meeting
@@ -111,7 +122,8 @@ import Data.String as String
 import Data.Tuple (Tuple(..))
 import Hylograph.Flow (GroupId, Projection)
 import Hylograph.Flow.Render.Engine (Box, Conservation, Course(..), Direction(..), Engine, Layout, Picture, PlacedEdge, PlacedNode, PlacedOutline, PortFlow(..), Promise(..), Scaling, Side(..), openPaths, plainPicture, portPoint, promises, run, scaledBreadth)
-import Hylograph.Flow.Render.Route (Point, Route(..))
+import Hylograph.Flow.Render.Measures as Measures
+import Hylograph.Flow.Render.Route (Ink(..), Point, Route(..))
 import Hylograph.Flow.Render.Route as Route
 import Hylograph.Flow.Render.Sankey (Metrics, Widths(..), sankey)
 import Hylograph.Flow.Render.Text (available, breadthOf, estimateWidth, heavier, heightOf)
@@ -133,6 +145,7 @@ data Law
   | FixedKept
   | Scaled
   | Carried
+  | InkWithin
 
 derive instance Eq Law
 derive instance Ord Law
@@ -154,6 +167,7 @@ instance Show Law where
     FixedKept -> "FixedKept"
     Scaled -> "Scaled"
     Carried -> "Carried"
+    InkWithin -> "InkWithin"
 
 -- | What is wrong, and which law it is against.
 type Fault = { law :: Law, words :: String }
@@ -175,6 +189,7 @@ lawOf = case _ of
   KeepsFixed -> FixedKept
   WidthsScaled _ -> Scaled
   WidthsCarried _ -> Carried
+  StaysWithin -> InkWithin
 
 -- | No path of edges returns to where it began (an edge from a node to
 -- | itself is such a path).
@@ -221,6 +236,21 @@ strangers laid = do
   let members = Set.fromFoldable outline.members
   node <- laid.nodes
   if not (Set.member node.index members) && overlapping node.box outline.box then [ { group: outline.group, node } ] else []
+
+-- | The ribbons drawn broader than they are (`Ink.Least`), each with its
+-- | breadth and the breadth it is drawn at: **the one stated exception to
+-- | breadth being data** (0.7). The conservation laws (`Conservation`,
+-- | `Carried`) are read with it and are not loosened: they hold of every
+-- | ribbon's `breadth`, which is still its quantity at the scale and still
+-- | the room it takes on its nodes; what is excepted is the ink, and only
+-- | of the ribbons listed here. Those laws report a ribbon that claims the
+-- | exception and is not thinner than the stroke it is drawn at.
+notToScale :: forall wire. Layout wire -> Array { index :: Int, breadth :: Number, drawn :: Number }
+notToScale laid = laid.edges # Array.mapMaybe \placed -> case placed.route of
+  Ribbon ribbon -> case ribbon.ink of
+    Least stroke -> Just { index: placed.index, breadth: ribbon.breadth, drawn: stroke }
+    _ -> Nothing
+  _ -> Nothing
 
 -- | The general laws and exactly the laws the engine promises, of a layout
 -- | said to be the engine's of the projection under the picture.
@@ -427,6 +457,7 @@ promiseFaults promise given projection laid = map (\words -> { law: lawOf promis
   WidthsCarried conservation -> conserved false conservation
   KeepsFixed -> kept
   WidthsScaled scaling -> scaled scaling
+  StaysWithin -> inkWithin
   where
   -- how far along the flow, and across it, a point is
   along :: Point -> Number
@@ -443,6 +474,21 @@ promiseFaults promise given projection laid = map (\words -> { law: lawOf promis
   middle box = { x: box.x + box.width / 2.0, y: box.y + box.height / 2.0 }
 
   layerOf key = Array.find (\n -> n.node.key == key) laid.nodes >>= _.layer
+
+  -- ---- ink inside the picture -------------------------------------------------------
+  inkWithin = Array.catMaybes
+    ( Array.zipWith
+        ( \placed band ->
+            if all (all (\corner -> all isFinite [ corner.x, corner.y ] && corner.x >= -inkRoom && corner.y >= -inkRoom && corner.x <= laid.width + inkRoom && corner.y <= laid.height + inkRoom)) (Measures.inkOf laid.direction band) then Nothing
+            else Just (describeEdge placed <> " is drawn outside the picture")
+        )
+        laid.edges
+        (Measures.bandedOf (const "") laid).bands
+    )
+
+  -- a ribbon's ink may pass the picture's edge by this: the curve of a
+  -- stroke between two of the points it is measured at
+  inkRoom = 0.5
 
   -- ---- with the flow ------------------------------------------------------------
   goesForward e = along (Route.end e.route) > along (Route.start e.route) && case layerOf e.edge.from, layerOf e.edge.to of
@@ -511,7 +557,7 @@ promiseFaults promise given projection laid = map (\words -> { law: lawOf promis
   -- need); otherwise at least that
   conserved :: Boolean -> Conservation wire -> Array String
   conserved exactly conservation =
-    notRibbons <>
+    notRibbons <> excepted <>
       if not allPositive then []
       else
         Array.mapMaybe (\e -> if near e.breadth (conservation.pixelsPerUnit * conservation.unitsOf e.placed.edge) then Nothing else Just (describeEdge e.placed <> " is " <> show e.breadth <> " wide, its width says " <> show (conservation.pixelsPerUnit * conservation.unitsOf e.placed.edge))) ribbons
@@ -535,6 +581,10 @@ promiseFaults promise given projection laid = map (\words -> { law: lawOf promis
     notRibbons = laid.edges # Array.mapMaybe \placed -> case placed.route of
       Ribbon _ -> Nothing
       _ -> Just (describeEdge placed <> " is not a ribbon")
+    -- the stated exception (`notToScale`) is for what is too thin to see
+    excepted = notToScale laid # Array.mapMaybe \found ->
+      if found.breadth < found.drawn then Nothing
+      else Just ("edge " <> show found.index <> " is drawn not to scale, " <> show found.drawn <> " broad, and is " <> show found.breadth <> " broad: no thinner than it is drawn")
     allPositive = all (\e -> conservation.unitsOf e > 0.0) projection.edges
 
     -- the ribbons standing on one side of a node, in order across the flow
