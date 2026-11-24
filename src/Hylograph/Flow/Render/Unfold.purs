@@ -209,8 +209,8 @@ abreast extent parts = abs (sum (map _.breadth parts) - extent) <= 1.0e-6 * max 
 
 -- | A plan held to a length (0.7): the gap between tiers is what the
 -- | proportion asks for, or as much of it as leaves the finest flow's
--- | picture no longer along the flow than `length`, and never less than
--- | the metrics' own gap. `plan.room` then says whether it could be given
+-- | picture, and its coarsest, no longer along the flow than `length`, and
+-- | never less than the metrics' own gap. `plan.room` then says whether it could be given
 -- | (`given < wanted`: it could not).
 heldTo :: Direction -> Metrics -> Number -> Plan -> Plan
 heldTo direction metrics length planned = planned { room = planned.room { given = max metrics.layerGap (min planned.room.wanted allowed) } }
@@ -393,7 +393,15 @@ plan metrics widths whole = roomy
       ).found
     _, _ -> []
   wanted = max metrics.layerGap (thresholds.proportion * max broadest furthest)
-  roomy = base { room = { wanted, given: wanted, tiers: 1 + foldl (\most n -> max most (fromMaybe 0 n.layer)) 0 finest.nodes } }
+  -- How many tiers a cut can have: the finest flow's, or the coarsest's
+  -- where that is more (every top-level group closed: a group whose parts
+  -- stood in several tiers beside other things is then one link of a
+  -- longer chain). A cut between the two can have more than either; a
+  -- plan held to a length holds those two.
+  coarsest = wholeOf metrics.nodeBreadth metrics.restHeight metrics (Array.nub (Array.mapWithIndex (\index _ -> nameOf (blockAt index)) fine.nodes))
+    (Array.filter (\row -> row.s /= row.t) (routable <#> \r -> { s: nameOf (blockAt r.from), t: nameOf (blockAt r.to), v: widthOf widths r.edge }))
+  tiersOf nodes = 1 + foldl (\most n -> max most n.layer) 0 nodes
+  roomy = base { room = { wanted, given: wanted, tiers: max (1 + foldl (\most n -> max most (fromMaybe 0 n.layer)) 0 finest.nodes) (tiersOf coarsest.nodes) } }
 
   -- ---- the parts of each group -------------------------------------------------
   indexOfKey :: Map ElementKey Int
