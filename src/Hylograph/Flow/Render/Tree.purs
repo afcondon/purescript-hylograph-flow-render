@@ -111,6 +111,7 @@ import Hylograph.Flow.Render.Route as Route
 import Hylograph.Flow.Overlay (Overlay)
 import Hylograph.Flow.Overlay as Overlay
 import Data.Int (toNumber)
+import Data.Number (abs)
 import Hylograph.Flow.Render.Text (defaultLettering, estimateWidth, heavier, lineHeight)
 import Hylograph.HATS (ElementType(..), Tree, elem, forEach, onClick, onMouseEnter, onMouseLeave, staticStr, withBehaviors)
 import Hylograph.HATS.Friendly as Friendly
@@ -337,17 +338,44 @@ treeLabelled labels decoration laid =
     Just name -> [ staticStr "tabindex" "0", staticStr "role" "button", staticStr "aria-label" name ]
     Nothing -> []
 
+  -- where an outline's name is written, down the page: in the middle of
+  -- its strip, or on its top edge where it has none
+  nameLine :: PlacedOutline -> Number
+  nameLine found = if found.header <= 0.0 then found.box.y else found.box.y + found.header / 2.0
+
+  -- where an outline's name ends, across the page
+  nameEnd :: PlacedOutline -> Number
+  nameEnd found = found.box.x + (if found.header <= 0.0 then indentOf found else 0.0) + 16.0 + heavier * estimateWidth 11.0 found.name
+
+  -- how far in a strip-less outline's name is set: past the end of the
+  -- name of the nearest outline over it that is written on its line
+  indentOf :: PlacedOutline -> Number
+  indentOf found = go (found.parent >>= \parent -> Array.find (\other -> other.group == parent) laid.outlines)
+    where
+    go = case _ of
+      Just above ->
+        if abs (nameLine above - nameLine found) < 11.0 then max 0.0 (nameEnd above - found.box.x)
+        else go (above.parent >>= \parent -> Array.find (\other -> other.group == parent) laid.outlines)
+      Nothing -> 0.0
+
   -- an open group: its box takes no gesture, its name does
   outlineMark :: PlacedOutline -> Tree
   outlineMark outline =
     let
       nameSize = 11.0
-      tabWidth = min outline.box.width (16.0 + heavier * estimateWidth nameSize outline.name)
-      -- the name takes gestures through its tab; where the outline has no
+      stripless = outline.header <= 0.0
+      nameWidth named = 16.0 + heavier * estimateWidth nameSize named
+      -- The name takes gestures through its tab. Where the outline has no
       -- strip for it at all (the unfolding engine's inner outlines, which
-      -- take no room), the tab is as tall as the name, about the outline's
-      -- top, so that it can be pointed at (0.6; any strip is as it was)
-      tabHeight = if outline.header > 0.0 then outline.header else nameSize + 1.0
+      -- take no room), the name is set on the outline's top edge, the tab
+      -- as tall as the name and as wide, and both after the names of the
+      -- outlines over it whose names are on that same line: so the names of
+      -- a group and of the groups it begins with read one after another,
+      -- and each can be pointed at (0.6; an outline with a strip is as it
+      -- was)
+      tabHeight = if stripless then nameSize + 1.0 else outline.header
+      tabWidth = if stripless then nameWidth outline.name else min outline.box.width (nameWidth outline.name)
+      indent = if stripless then indentOf outline else 0.0
     in
       withBehaviors (gestures (PointedGroup outline.group)) $
         elem Group
@@ -372,8 +400,8 @@ treeLabelled labels decoration laid =
               []
           , elem Rect
               [ staticStr "class" "flow-outline-tab"
-              , Friendly.x outline.box.x
-              , Friendly.y (if outline.header > 0.0 then outline.box.y else outline.box.y - tabHeight / 2.0)
+              , Friendly.x (outline.box.x + indent)
+              , Friendly.y (if stripless then outline.box.y - tabHeight / 2.0 else outline.box.y)
               , Friendly.width tabWidth
               , Friendly.height tabHeight
               , Friendly.fill paper
@@ -383,7 +411,7 @@ treeLabelled labels decoration laid =
               []
           , elem Text
               [ staticStr "class" "flow-outline-label"
-              , Friendly.x (outline.box.x + 8.0)
+              , Friendly.x (outline.box.x + indent + 8.0)
               , Friendly.y (outline.box.y + outline.header / 2.0 + 1.0)
               , Friendly.textAnchor "start"
               , staticStr "dominant-baseline" "central"
