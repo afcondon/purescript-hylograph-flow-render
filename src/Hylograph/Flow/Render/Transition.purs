@@ -43,16 +43,21 @@
 -- | tick is pure; `watch` runs one on its `Coordinator`, drawing each
 -- | value. Nothing here keeps time of its own.
 -- |
--- | `watch` is the one thing here that the ecosystem already has, and it
--- | is here because that one cannot be had: a consumer that ticks a
--- | transition and hands on its value is `transitionConsumer`, in
--- | `hylograph-simulation` (`Hylograph.Transition.Consumers`), whose
--- | package also holds the force simulation and so needs `d3-force`,
--- | `d3-selection` and `d3-drag` to be bundled. A page that draws a flow
--- | has no D3 and wants none. `watch` is those ten lines over the same
--- | `Engine` and `Coordinator`, and should go when `transitionConsumer`
--- | lives in `hylograph-transitions`, which it depends on nothing else to
--- | do.
+-- | `watch` is the one thing here that the ecosystem already has: a
+-- | consumer that ticks a transition and hands on its value is
+-- | `transitionConsumer`, in `hylograph-simulation`
+-- | (`Hylograph.Transition.Consumers`). It is here as well so that this
+-- | package need not depend on the simulation package (the force
+-- | simulation, and what that depends on) for ten lines; a page that
+-- | already has that package can give `watched`'s spec to
+-- | `transitionConsumer` instead and not call `watch` at all, as the lab
+-- | page `sverdrup-unfold` does. (Since 1.0.0 that package has no D3 in
+-- | it. Package set 77.13.1 still resolves it to 0.5.0, which has, and
+-- | which cannot be bundled without `d3-force`: pin 1.1.0, and
+-- | `hylograph-forces` 0.1.0 with it.) `watch` should go when
+-- | `transitionConsumer` lives in `hylograph-transitions`, which it needs
+-- | nothing else to do; whether to drop it sooner is a decision not taken
+-- | here.
 module Hylograph.Flow.Render.Transition
   ( Stage
   , stages
