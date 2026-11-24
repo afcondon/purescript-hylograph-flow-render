@@ -38,18 +38,16 @@
 -- | take it one group at a time. A change with no group opened or closed,
 -- | between two layouts of one shape, is one stage.
 -- |
--- | THE MACHINERY is the ecosystem's: `watched` gives a `TransitionSpec`
--- | of layouts (`hylograph-transitions`' engine's, with its easings),
--- | whose tick is pure. Nothing here keeps time or runs anything: a page
--- | starts the spec (`Hylograph.Transition.Engine.start`) and gives it to
--- | a consumer on a `Coordinator` (`hylograph-simulation`'s
--- | `Hylograph.Transition.Consumers.transitionConsumer`), drawing each
--- | layout as it comes.
+-- | THE MACHINERY is `hylograph-transitions`: `watched` gives a
+-- | `TransitionSpec` of layouts (its engine's, with its easings), whose
+-- | tick is pure; `watch` runs one on its `Coordinator`, drawing each
+-- | value. Nothing here keeps time of its own.
 module Hylograph.Flow.Render.Transition
   ( Stage
   , stages
   , frame
   , watched
+  , watch
   ) where
 
 import Prelude
@@ -61,9 +59,12 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Number (abs)
 import Data.Tuple (Tuple(..))
+import Effect (Effect)
+import Effect.Ref as Ref
 import Hylograph.Flow.Render.Continuity (opened)
 import Hylograph.Flow.Render.Engine (Box, Direction(..), Layout)
 import Hylograph.Flow.Render.Reshape (blend, reshaped, sameShape)
+import Hylograph.Transition.Coordinator (ConsumerId, Coordinator, TickResult(..), register)
 import Hylograph.Transition.Easing (EasingType(..), toFunction)
 import Hylograph.Transition.Engine (TransitionConfig, TransitionSpec)
 import Hylograph.Transition.Engine as Engine
@@ -170,3 +171,18 @@ watched config found = do
   last <- Array.last found
   pure $ Engine.transitionWith (\_ to part -> fromMaybe to (frame config.easing found part)) { from: first.from, to: last.to }
     { duration: config.duration * toNumber (Array.length found), easing: Linear, delay: config.delay }
+
+-- | Run a transition on a coordinator: `draw` is given each value as it
+-- | comes, the last of them the transition's end exactly, and then `done`
+-- | is run. (The coordinator must be started; it goes on asking for frames
+-- | when it has no consumer, so stop it when nothing is left to watch.)
+watch :: forall a. Coordinator -> TransitionSpec a -> (a -> Effect Unit) -> Effect Unit -> Effect ConsumerId
+watch coordinator spec draw done = do
+  state <- Ref.new (Engine.start spec)
+  register coordinator
+    { tick: \delta -> do
+        now <- Ref.modify (Engine.tick delta) state
+        if Engine.isComplete now then draw spec.to $> Completed
+        else draw (Engine.currentValue now) $> StillRunning
+    , onComplete: done
+    }
