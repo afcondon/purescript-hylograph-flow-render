@@ -63,8 +63,9 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Number (abs)
 import Data.Tuple (Tuple(..))
+import Hylograph.Flow (GroupId)
 import Hylograph.Flow.Render.Continuity (opened)
-import Hylograph.Flow.Render.Engine (Box, Direction(..), Layout)
+import Hylograph.Flow.Render.Engine (Box, Direction(..), Layout, runAt, runsOf)
 import Hylograph.Flow.Render.Reshape (blend, reshaped, sameShape)
 import Hylograph.Transition.Easing (EasingType(..), toFunction)
 import Hylograph.Transition.Engine (TransitionConfig, TransitionSpec)
@@ -135,7 +136,7 @@ unfolding shut open =
 
   roomMade = reshaped
     { node: \n -> fromMaybe n.box (if Map.member n.node.key barBoxes then Map.lookup n.node.key barBoxes else Map.lookup n.node.key inOpen)
-    , outline: \outline -> fromMaybe outline.box (_.box <$> Array.find (\other -> other.group == outline.group) open.outlines)
+    , outline: \outline -> fromMaybe outline.box (_.box <$> (runOf shut outline >>= \run -> runAt outline.group run open.outlines))
     , width: open.width
     , height: open.height
     }
@@ -150,6 +151,10 @@ unfolding shut open =
     , height: open.height
     }
     open
+
+-- | Which of its group's outlines in a layout an outline is (`Engine.runsOf`).
+runOf :: forall wire. Layout wire -> { group :: GroupId, box :: Box | _ } -> Maybe Int
+runOf laid outline = _.run <$> Array.find (\found -> found.outline.group == outline.group && found.outline.box == outline.box) (runsOf laid.outlines)
 
 -- | The picture a part of the way through the stages, from 0 (the first
 -- | stage's start) to 1 (the last stage's end), each stage taking an equal

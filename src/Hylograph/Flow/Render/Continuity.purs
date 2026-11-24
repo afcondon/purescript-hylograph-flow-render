@@ -118,10 +118,12 @@ opened :: forall wire. Layout wire -> Layout wire -> Array Opened
 opened here there = do
   node <- here.nodes
   case groupOfKey node.node.key of
-    Just group | not (Array.any (\n -> n.node.key == node.node.key) there.nodes) -> case Array.find (\outline -> outline.group == group) there.outlines of
-      Just outline ->
+    Just group | not (Array.any (\n -> n.node.key == node.node.key) there.nodes) -> case Array.filter (\outline -> outline.group == group) there.outlines of
+      [] -> []
+      -- every outline of the group: one, or one for each run of its parts (0.7)
+      outlines ->
         let
-          parts = Array.mapMaybe (\index -> Array.find (\n -> n.index == index) there.nodes) outline.members
+          parts = Array.mapMaybe (\index -> Array.find (\n -> n.index == index) there.nodes) (Array.sort (Array.concatMap _.members outlines))
           tiers = Array.nub (map _.layer parts)
           first = foldl (\least part -> min least (start part.box)) (1.0 / 0.0) parts
           last = foldl (\most part -> max most (start part.box + breadth part.box)) (-1.0 / 0.0) parts
@@ -141,7 +143,6 @@ opened here there = do
                   }
               }
             ]
-      Nothing -> []
     _ -> []
   where
   start box = case here.direction of

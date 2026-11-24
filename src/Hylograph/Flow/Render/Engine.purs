@@ -80,6 +80,10 @@ module Hylograph.Flow.Render.Engine
   , PlacedNode
   , PlacedEdge
   , PlacedOutline
+  , runsOf
+  , runAt
+  , Only(..)
+  , Seamed
   , Layout
   , Groups
   , OutlineMetrics
@@ -200,7 +204,8 @@ type PlacedEdge wire =
   , course :: Course
   }
 
--- | An open group's outline. `name`: the group's, from the grouping.
+-- | An open group's outline. Since 0.7 a group may have more than one: see
+-- | `runsOf`. `name`: the group's, from the grouping.
 -- | `header`: the height of the strip at the top of `box` that is kept for
 -- | the name. `depth`: how many outlines it is inside; `parent`: the
 -- | nearest. `members`: the indices of the nodes inside it, however deep.
@@ -213,6 +218,39 @@ type PlacedOutline =
   , parent :: Maybe GroupId
   , members :: Array Int
   }
+
+-- | The outlines of a layout, each with which of its group's it is: 0 for
+-- | the first in the layout's order, 1 for the next of the same group, and
+-- | so on (0.7). An engine that draws a group whose members stand in
+-- | separate runs of tiers as tied outlines (the unfolding engine) gives
+-- | the group one outline for each run, in order along the flow; every
+-- | other engine gives each group one, and every run is 0.
+runsOf :: Array PlacedOutline -> Array { run :: Int, outline :: PlacedOutline }
+runsOf outlines = Array.mapWithIndex (\place outline -> { run: Array.length (Array.filter (\earlier -> earlier.group == outline.group) (Array.take place outlines)), outline }) outlines
+
+-- | A group's outline for one of its runs, if it has that many.
+runAt :: GroupId -> Int -> Array PlacedOutline -> Maybe PlacedOutline
+runAt group run outlines = Array.index (Array.filter (\outline -> outline.group == group) outlines) run
+
+-- | What a part of a closed group does at the group's boundary, where it
+-- | does only one thing: it only receives (a dead end), or only gives (a
+-- | spring).
+data Only = OnlyReceives | OnlyGives
+
+derive instance Eq Only
+
+instance Show Only where
+  show = case _ of
+    OnlyReceives -> "OnlyReceives"
+    OnlyGives -> "OnlyGives"
+
+-- | A closed group's bar with its seams (0.7): the parts the group opens
+-- | into, where they stand side by side and together are exactly as broad
+-- | as the bar. `node`: the bar's index in the layout. Each part is from
+-- | `from` to `to` across the flow, measured from the bar's start; `only`
+-- | is said where the bar itself both receives and gives and the part does
+-- | one of them alone.
+type Seamed = { node :: Int, key :: ElementKey, parts :: Array { name :: String, from :: Number, to :: Number, only :: Maybe Only } }
 
 -- | Nodes and edges in the projection's order. An edge with an end that is
 -- | no node of the projection has no place and is left out (`project` makes

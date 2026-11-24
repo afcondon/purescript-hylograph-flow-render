@@ -113,6 +113,9 @@ module Hylograph.Flow.Render.Unfold
   , groupBreadth
   , rankOf
   , gathered
+  , Part
+  , seams
+  , heldTo
   ) where
 
 import Prelude
@@ -124,6 +127,7 @@ import Data.Int (toNumber)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
+import Data.Number (abs)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Traversable (for)
@@ -132,9 +136,9 @@ import DataViz.Layout.Sankey.Lanes (laneOf)
 import DataViz.Layout.Sankey.Path (findNode)
 import DataViz.Layout.Sankey.Types (Alignment(..), LinkColorMode(..), SankeyConfig, defaultSankeyConfig)
 import DataViz.Layout.Sankey.Whole (Sizing(..), WholeLayout, computeWholeLayout)
-import Hylograph.Flow (Edge, ElementKey(..), GroupId, ItemId(..), Projection, StepId(..))
+import Hylograph.Flow (Edge, ElementKey(..), GroupId, ItemId(..), PortName(..), Projection, StepId(..), WireId(..))
 import Hylograph.Flow.Grouping (Grouping(..))
-import Hylograph.Flow.Render.Engine (Course(..), Direction(..), Engine(..), Layout, Picture, Promise(..), openPaths)
+import Hylograph.Flow.Render.Engine (Course(..), Direction(..), Engine(..), Layout, Only(..), Picture, Promise(..), Seamed, openPaths, plainPicture)
 import Hylograph.Flow.Render.Measures (thresholds)
 import Hylograph.Flow.Render.Route (Ink(..), Piece(..), Point, Route(..))
 import Hylograph.Flow.Render.Sankey (Metrics, Widths(..), stoodOnEnd, widthOf)
@@ -153,6 +157,11 @@ type Whole wire = { grouping :: Array Grouping, finest :: Projection wire }
 -- | first rank of it. `breadth`: each group's breadth, in pixels.
 -- | `levels`: how many levels of group are inside each group. `deepest`:
 -- | how many groups deep the grouping goes.
+-- | `parts` (0.7): the parts each group opens into (its members and the
+-- | groups directly inside it), in the one order. `room` (0.7): the gap
+-- | between two tiers along the flow: what the proportion asks for
+-- | (`wanted`), what the engine gives (`given`: the same, unless the plan
+-- | was held to a length, `heldTo`), and how many tiers the finest flow has.
 type Plan =
   { rank :: Map ElementKey Int
   , span :: Map GroupId { lo :: Int, hi :: Int }
@@ -161,7 +170,56 @@ type Plan =
   , breadth :: Map GroupId Number
   , levels :: Map GroupId Int
   , deepest :: Int
+  , parts :: Map GroupId (Array Part)
+  , room :: { wanted :: Number, given :: Number, tiers :: Int }
   }
+
+-- | A part of a group: a member, or a group directly inside it. `lo`,
+-- | `hi`: its ranks. `breadth`: in pixels, a member's as broad as its
+-- | broader side in the finest flow, a group's as broad as it is closed.
+-- | `only`: what it does alone, in the finest flow, where it only receives
+-- | or only gives (see `Only`).
+type Part = { name :: String, lo :: Int, hi :: Int, breadth :: Number, only :: Maybe Only }
+
+-- | The seams of each closed group's bar in a layout (0.7): where the
+-- | parts it opens into divide it. Only for a bar whose parts, side by
+-- | side, are exactly as broad as it is: then no two of them are ever on
+-- | one path, the bar is the parts abreast, and where it opens in its own
+-- | tier each part takes the place its seams mark. A group whose parts
+-- | follow one another (a chain) is as broad as the broadest of them and
+-- | has no seams. A part is marked as only receiving or only giving where
+-- | the group itself does both: that is what says "five end here and four
+-- | others begin here" of a bar with five on one side and four on the
+-- | other.
+seams :: forall wire. Plan -> Layout wire -> Array Seamed
+seams planned laid = laid.nodes # Array.mapMaybe \n -> do
+  group <- groupOfKey n.node.key
+  parts <- Map.lookup group planned.parts
+  let
+    extent = case laid.direction of
+      LeftToRight -> n.box.height
+      TopDown -> n.box.width
+    both = Array.any (\e -> e.edge.from == n.node.key) laid.edges && Array.any (\e -> e.edge.to == n.node.key) laid.edges
+    placed = (foldl (\state part -> { at: state.at + part.breadth, found: Array.snoc state.found { name: part.name, from: state.at, to: state.at + part.breadth, only: if both then part.only else Nothing } }) { at: 0.0, found: [] } parts).found
+  if Array.length parts >= 2 && abreast extent parts then Just { node: n.index, key: n.node.key, parts: placed } else Nothing
+
+-- | Whether parts side by side come to a breadth, to a millionth of it.
+abreast :: Number -> Array Part -> Boolean
+abreast extent parts = abs (sum (map _.breadth parts) - extent) <= 1.0e-6 * max 1.0 extent
+
+-- | A plan held to a length (0.7): the gap between tiers is what the
+-- | proportion asks for, or as much of it as leaves the finest flow's
+-- | picture no longer along the flow than `length`, and never less than
+-- | the metrics' own gap. `plan.room` then says whether it could be given
+-- | (`given < wanted`: it could not).
+heldTo :: Direction -> Metrics -> Number -> Plan -> Plan
+heldTo direction metrics length planned = planned { room = planned.room { given = max metrics.layerGap (min planned.room.wanted allowed) } }
+  where
+  extent = case direction of
+    LeftToRight -> metrics.nodeBreadth
+    TopDown -> metrics.restHeight
+  tiers = toNumber planned.room.tiers
+  allowed = if planned.room.tiers < 2 then planned.room.wanted else (length - metrics.layerGap - tiers * extent) / (tiers - 1.0)
 
 -- | How broad a group is, closed or open, in pixels; nothing for a group
 -- | that holds no node of the finest flow.
@@ -261,30 +319,110 @@ routableOf projection = Array.catMaybes $ Array.mapWithIndex
 
 -- | Every group over each element the grouping names, outermost first, and
 -- | every group's own chain (itself last), whatever is open.
-chainsOf :: Array Grouping -> { ofKey :: Map ElementKey (Array GroupId), ofGroup :: Map GroupId (Array GroupId), levels :: Map GroupId Int }
-chainsOf forest = foldl (walk []) { ofKey: Map.empty, ofGroup: Map.empty, levels: Map.empty } forest
+chainsOf :: Array Grouping -> { ofKey :: Map ElementKey (Array GroupId), ofGroup :: Map GroupId (Array GroupId), levels :: Map GroupId Int, children :: Map GroupId (Array Child), names :: Map GroupId String }
+chainsOf forest = foldl (walk []) { ofKey: Map.empty, ofGroup: Map.empty, levels: Map.empty, children: Map.empty, names: Map.empty } forest
   where
   walk chain known = case _ of
     Member step -> known { ofKey = Map.insert (StepKey step) chain known.ofKey }
     Holds item -> known { ofKey = Map.insert (ItemKey item) chain known.ofKey }
-    whole@(Group group _ inner) ->
-      foldl (walk (Array.snoc chain group)) (known { ofGroup = Map.insert group (Array.snoc chain group) known.ofGroup, levels = Map.insert group (levelsIn whole - 1) known.levels }) inner
+    whole@(Group group name inner) ->
+      foldl (walk (Array.snoc chain group))
+        ( known
+            { ofGroup = Map.insert group (Array.snoc chain group) known.ofGroup
+            , levels = Map.insert group (levelsIn whole - 1) known.levels
+            , names = Map.insert group name known.names
+            , children = Map.insert group (map childOf inner) known.children
+            }
+        )
+        inner
+  childOf = case _ of
+    Member step -> Element (StepKey step)
+    Holds item -> Element (ItemKey item)
+    Group group _ _ -> Inner group
   levelsIn = case _ of
     Group _ _ inner -> 1 + foldl (\most g -> max most (levelsIn g)) 0 inner
     _ -> 0
 
+-- | What a group holds directly: an element, or a group.
+data Child = Element ElementKey | Inner GroupId
+
 -- | What no cut changes, read once from the finest flow.
 plan :: forall wire. Metrics -> Widths wire -> Whole wire -> Plan
-plan metrics widths whole =
-  { rank
-  , span
-  , block: Map.fromFoldable (Array.mapWithIndex (\index node -> Tuple node.key (blockOf (chainAt index) (rankAt index))) fine.nodes)
-  , blockOfGroup: Map.mapMaybeWithKey (\_ chain -> Array.head chain >>= \outer -> _.lo <$> Map.lookup outer span) chains.ofGroup
-  , breadth: breadths
-  , levels: chains.levels
-  , deepest: foldl (\most chain -> max most (Array.length chain)) 0 (Map.values chains.ofGroup)
-  }
+plan metrics widths whole = roomy
   where
+  base :: Plan
+  base =
+    { rank
+    , span
+    , block: blocks
+    , blockOfGroup: Map.mapMaybeWithKey (\_ chain -> Array.head chain >>= \outer -> _.lo <$> Map.lookup outer span) chains.ofGroup
+    , breadth: breadths
+    , levels: chains.levels
+    , deepest: foldl (\most chain -> max most (Array.length chain)) 0 (Map.values chains.ofGroup)
+    , parts
+    , room: { wanted: metrics.layerGap, given: metrics.layerGap, tiers: 1 }
+    }
+
+  blocks = Map.fromFoldable (Array.mapWithIndex (\index node -> Tuple node.key (blockOf (chainAt index) (rankAt index))) fine.nodes)
+
+  -- ---- room along the flow ---------------------------------------------------
+  -- The gap between tiers is one number for every cut (or opening a group
+  -- would move what is downstream of it, and nothing would be Held). It is
+  -- asked to be `thresholds.proportion` times the broadest ribbon any cut
+  -- can have, and times the furthest any ribbon of the finest cut travels
+  -- across the flow between two tiers.
+  --
+  -- The broadest ribbon of any cut: closing only gathers, so it is a
+  -- ribbon of the finest flow, or everything that goes from one top-level
+  -- group to one top-level block.
+  blockAt index = fromMaybe index (Array.index fine.nodes index >>= \node -> Map.lookup node.key blocks)
+  broadest = metrics.unit * foldl max 0.0
+    ( map (\r -> widthOf widths r.edge) routable
+        <> Array.fromFoldable (Map.values (foldl (\m r -> if Array.null (chainAt r.from) || blockAt r.from == blockAt r.to then m else Map.insertWith (+) (Tuple (blockAt r.from) (blockAt r.to)) (widthOf widths r.edge) m) Map.empty routable))
+    )
+  finest = laidOut base LeftToRight metrics widths whole (plainPicture { groups = Just { grouping: whole.grouping, closed: Set.empty } }) fine
+  furthest = foldl max 0.0 $ finest.edges >>= \placed -> case placed.course, placed.route of
+    Forward, Ribbon ribbon ->
+      ( foldl
+          ( \state piece -> case piece of
+              Curved curve -> { at: curve.to, found: Array.snoc state.found (abs (curve.to.y - state.at.y)) }
+              Straight to -> { at: to, found: Array.snoc state.found (abs (to.y - state.at.y)) }
+          )
+          { at: ribbon.from, found: [] }
+          (NonEmptyArray.toArray ribbon.pieces)
+      ).found
+    _, _ -> []
+  wanted = max metrics.layerGap (thresholds.proportion * max broadest furthest)
+  roomy = base { room = { wanted, given: wanted, tiers: 1 + foldl (\most n -> max most (fromMaybe 0 n.layer)) 0 finest.nodes } }
+
+  -- ---- the parts of each group -------------------------------------------------
+  indexOfKey :: Map ElementKey Int
+  indexOfKey = foldl (\m (Tuple index node) -> if Map.member node.key m then m else Map.insert node.key index m) Map.empty (Array.mapWithIndex Tuple fine.nodes)
+
+  onlyOf :: Number -> Number -> Maybe Only
+  onlyOf entering leaving =
+    if entering > 0.0 && leaving <= 0.0 then Just OnlyReceives
+    else if leaving > 0.0 && entering <= 0.0 then Just OnlyGives
+    else Nothing
+
+  partOf :: Child -> Maybe Part
+  partOf = case _ of
+    Element key -> do
+      index <- Map.lookup key indexOfKey
+      node <- Array.index fine.nodes index
+      pure { name: node.label, lo: rankAt index, hi: rankAt index, breadth: metrics.unit * through index, only: onlyOf (fromMaybe 0.0 (Map.lookup index into)) (fromMaybe 0.0 (Map.lookup index outOf)) }
+    Inner group -> do
+      found <- Map.lookup group span
+      breadth <- Map.lookup group breadths
+      let
+        inside index = Array.elem group (chainAt index)
+        entering = sum (Array.filter (\r -> inside r.to && not (inside r.from)) routable <#> \r -> widthOf widths r.edge)
+        leaving = sum (Array.filter (\r -> inside r.from && not (inside r.to)) routable <#> \r -> widthOf widths r.edge)
+      pure { name: fromMaybe "" (Map.lookup group chains.names), lo: found.lo, hi: found.hi, breadth, only: onlyOf entering leaving }
+
+  parts :: Map GroupId (Array Part)
+  parts = map (Array.sortWith _.lo <<< Array.mapMaybe partOf) chains.children
+
   fine = whole.finest
   chains = chainsOf whole.grouping
   count = Array.length fine.nodes
@@ -437,7 +575,7 @@ data Block
 
 type Frame = { group :: GroupId, parent :: Maybe GroupId, depth :: Int, top :: Number, bottom :: Number, first :: Int, last :: Int, members :: Array Int }
 
-type Sized = { first :: Int, last :: Int, breadth :: Number, cluster :: Tuple Int Int, tops :: Array (Tuple String Number), frames :: Array Frame }
+type Sized = { first :: Int, last :: Int, breadth :: Number, cluster :: Tuple Int Int, tops :: Array (Tuple String Number), frames :: Array Frame, members :: Array Int }
 
 -- | Worked out with the flow running left to right (x along the flow, y
 -- | across it), and stood on end at the last for a top-down layout.
@@ -497,7 +635,9 @@ laidOut planned direction metrics widths whole given projection = case direction
   extent = case direction of
     LeftToRight -> metrics.nodeBreadth
     TopDown -> metrics.restHeight
-  pitch = extent + metrics.layerGap
+  -- the gap between tiers is the plan's: one for every cut (0.7)
+  roomier = metrics { layerGap = planned.room.given }
+  pitch = extent + planned.room.given
 
   -- a node no edge touches that is a member of an open group, or is a
   -- closed group (one that nothing crosses into or out of): in the chart,
@@ -507,7 +647,7 @@ laidOut planned direction metrics widths whole given projection = case direction
   forShelf = Array.filter (\name -> not (Set.member name straySet)) names
 
   placed :: WholeLayout
-  placed = wholeOf extent metrics.restHeight metrics forShelf rows
+  placed = wholeOf extent metrics.restHeight roomier forShelf rows
 
   boxes = placed.nodes <> placed.waypoints
   turnsBack = not (Array.null placed.backEdges)
@@ -587,16 +727,25 @@ laidOut planned direction metrics widths whole given projection = case direction
       in { key, block: Cluster group key (blocksAt (depth + 1) (Array.filter (\entry -> Array.index entry.path depth == Just group) deeper)) }
 
   -- ---- the packing ----------------------------------------------------------------------
-  -- The blocks of one level in order, each as near the start as what is
+  -- The pieces of one level in order, each as near the start as what is
   -- before it in the tiers it spans allows. Tops are from the level's own
-  -- start; a cluster's parts and frames are from the cluster's.
-  packed :: Maybe GroupId -> Int -> Array Block -> { tops :: Array (Tuple String Number), frames :: Array Frame, bottom :: Number, first :: Int, last :: Int }
-  packed parent depth level =
+  -- start; a run's parts and frames are from the run's.
+  --
+  -- A piece is a node, a lane, or one *run* of an open group (0.7): the
+  -- group's parts that stand in tiers next to one another. A group whose
+  -- parts are all in one run is one piece, a band as broad as the group is
+  -- closed, as since 0.6. A group whose parts stand in separate runs, with
+  -- tiers between in which it has nothing, is a piece for each run, each
+  -- only as broad as what is in it, and nothing is kept for the group in
+  -- the tiers between: a stranger may stand there. Every piece of a level
+  -- is still taken in the one order, so in each tier the boxes stand in the
+  -- order of their ranks, whatever the cut: order is kept, and what is
+  -- given up is the one band.
+  packed :: Boolean -> Array Sized -> { tops :: Array (Tuple String Number), frames :: Array Frame, bottom :: Number, first :: Int, last :: Int, members :: Array Int }
+  packed atTop pieces =
     let
-      atTop = depth == 0
-      step state block =
+      step state sized =
         let
-          sized = size parent depth block
           tiers = Array.range sized.first sized.last
           start = foldl
             ( \most tier -> case Map.lookup tier state.skyline of
@@ -613,35 +762,49 @@ laidOut planned direction metrics widths whole given projection = case direction
           , bottom: max state.bottom end
           , first: min state.first sized.first
           , last: max state.last sized.last
+          , members: state.members <> sized.members
           }
-      done = foldl step { skyline: Map.empty, tops: [], frames: [], bottom: 0.0, first: top, last: bottom' } level
+      done = foldl step { skyline: Map.empty, tops: [], frames: [], bottom: 0.0, first: top, last: -1, members: [] } pieces
     in
-      { tops: done.tops, frames: done.frames, bottom: done.bottom, first: done.first, last: done.last }
-    where
-    bottom' = -1
+      { tops: done.tops, frames: done.frames, bottom: done.bottom, first: done.first, last: done.last, members: done.members }
 
-  size :: Maybe GroupId -> Int -> Block -> Sized
-  size parent depth = case _ of
-    Leaf entry -> { first: entry.tier, last: entry.tier, breadth: entry.breadth, cluster: entry.cluster, tops: [ Tuple entry.name 0.0 ], frames: [] }
+  -- the pieces a block is: one, or for an open group one for each run
+  piecesOf :: Maybe GroupId -> Int -> Block -> Array Sized
+  piecesOf parent depth = case _ of
+    Leaf entry -> [ { first: entry.tier, last: entry.tier, breadth: entry.breadth, cluster: entry.cluster, tops: [ Tuple entry.name 0.0 ], frames: [], members: Array.fromFoldable entry.node } ]
     Cluster group key within ->
       let
-        inner = packed (Just group) (depth + 1) within
-        breadth = max inner.bottom (fromMaybe 0.0 (groupBreadth planned group))
+        runs = runsAmong (within >>= piecesOf (Just group) (depth + 1))
+        one = Array.length runs == 1
       in
-        { first: inner.first
-        , last: inner.last
-        , breadth
-        , cluster: Tuple key.primary key.primary
-        , tops: inner.tops
-        , frames:
-            [ { group, parent, depth, top: 0.0, bottom: breadth, first: inner.first, last: inner.last, members: Array.sort (Array.concatMap membersOf within) } ]
-              <> inner.frames
-        }
+        runs <#> \run ->
+          let
+            inner = packed false run
+            breadth = if one then max inner.bottom (fromMaybe 0.0 (groupBreadth planned group)) else inner.bottom
+          in
+            { first: inner.first
+            , last: inner.last
+            , breadth
+            , cluster: Tuple key.primary key.primary
+            , tops: inner.tops
+            , frames: [ { group, parent, depth, top: 0.0, bottom: breadth, first: inner.first, last: inner.last, members: Array.sort inner.members } ] <> inner.frames
+            , members: inner.members
+            }
 
-  membersOf :: Block -> Array Int
-  membersOf = case _ of
-    Leaf entry -> Array.fromFoldable entry.node
-    Cluster _ _ within -> Array.concatMap membersOf within
+  -- pieces sorted into runs of tiers next to one another, the runs in
+  -- order along the flow, the pieces of each in the order they came in
+  runsAmong :: Array Sized -> Array (Array Sized)
+  runsAmong pieces =
+    let
+      spans = foldl
+        ( \found piece -> case Array.unsnoc found of
+            Just { init, last } | piece.first <= last.last + 1 -> Array.snoc init last { last = max last.last piece.last }
+            _ -> Array.snoc found { first: piece.first, last: piece.last }
+        )
+        []
+        (Array.sortWith _.first pieces)
+    in
+      spans <#> \run -> Array.filter (\piece -> piece.first >= run.first && piece.last <= run.last) pieces
 
   -- room before the first block and after the last, for the outline of a
   -- top-level group: there whether or not a group is open, so that opening
@@ -654,7 +817,7 @@ laidOut planned direction metrics widths whole given projection = case direction
   headroom = if outlined then strip else 0.0
   footroom = if outlined then foot else 0.0
 
-  settled = packed Nothing 0 (blocksAt 0 entries)
+  settled = packed true (blocksAt 0 entries >>= piecesOf Nothing 0)
   bottom = headroom + settled.bottom
 
   tops :: Map String Number
@@ -769,19 +932,56 @@ laidOut planned direction metrics widths whole given projection = case direction
 
   -- where each ribbon's middle is on a side of each node: the ribbons of
   -- a side from the node's start, in the order of their other ends' ranks
-  stacked :: forall r. ({ from :: Int, to :: Int | r } -> Int) -> ({ from :: Int, to :: Int | r } -> Int) -> Array { from :: Int, to :: Int | r } -> Map Int Number
-  stacked own other edges = Map.fromFoldable $ Array.concat $
-    Array.groupAllBy (comparing _.node) (Array.mapWithIndex (\place r -> { place, node: own r, order: Tuple (rankAt (other r)) place }) edges) <#> \side ->
+  --
+  -- On a closed group's bar that has seams (0.7; `seams`), a ribbon stands
+  -- in the part it belongs to, where that can be had without changing the
+  -- order: every ribbon of the side is of one part (its wires name the
+  -- member, `MemberPort`), and the order of the ranks is the order of the
+  -- parts. Then each ribbon stands no nearer the bar's start than its
+  -- part's seam. So the five that end in one part and the four that begin
+  -- in another do not stand level with one another, as if four of the five
+  -- had passed through.
+  stacked :: Boolean -> ({ from :: Int, to :: Int, edge :: Edge wire, index :: Int } -> Int) -> ({ from :: Int, to :: Int, edge :: Edge wire, index :: Int } -> Int) -> Map Int Number
+  stacked leaving own other = Map.fromFoldable $ Array.concat $
+    Array.groupAllBy (comparing _.node) (Array.mapWithIndex (\place r -> { place, node: own r, order: Tuple (rankAt (other r)) place, part: partAt leaving (own r) r.edge }) routable) <#> \side ->
       let
         inOrder = Array.sortWith _.order (NonEmptyArray.toArray side)
         start = topOf (nameOf (NonEmptyArray.head side).node)
+        seamsAt = seamStarts (NonEmptyArray.head side).node
+        found = Array.mapMaybe _.part inOrder
+        byPart = Array.length found == Array.length inOrder && found == Array.sort found
+        least e = if byPart then fromMaybe 0.0 (e.part >>= Array.index seamsAt) else 0.0
       in
-        (foldl (\state e -> { at: state.at + breadthOfEdge e.place, found: Array.snoc state.found (Tuple e.place (start + state.at + breadthOfEdge e.place / 2.0)) }) { at: 0.0, found: [] } inOrder).found
+        (foldl (\state e -> let from = max state.at (least e) in { at: from + breadthOfEdge e.place, found: Array.snoc state.found (Tuple e.place (start + from + breadthOfEdge e.place / 2.0)) }) { at: 0.0, found: [] } inOrder).found
+
+  -- where each part of a closed group's bar begins, from the bar's start;
+  -- none for a node that is no such bar, or whose parts are not abreast
+  seamStarts :: Int -> Array Number
+  seamStarts index = fromMaybe [] do
+    group <- keyAt index >>= groupOfKey
+    parts <- Map.lookup group planned.parts
+    if Array.length parts >= 2 && abreast (breadthAt index) parts then Just (foldl (\state part -> { at: state.at + part.breadth, found: Array.snoc state.found state.at }) { at: 0.0, found: [] } parts).found else Nothing
+
+  -- the one part of a closed group's bar that an edge's end at it belongs
+  -- to: nothing where its wires name no member, or members of two parts
+  partAt :: Boolean -> Int -> Edge wire -> Maybe Int
+  partAt leaving index edge = do
+    group <- keyAt index >>= groupOfKey
+    parts <- Map.lookup group planned.parts
+    let
+      members = Array.nub $ NonEmptyArray.toArray edge.wires # Array.mapMaybe \wire -> case wire.id of
+        Writes (GroupStep at) (MemberPort member _) _ | leaving && at == group -> Just member
+        Reads _ (GroupStep at) (MemberPort member _) | not leaving && at == group -> Just member
+        _ -> Nothing
+      found = Array.nub (members <#> \member -> Map.lookup (StepKey member) planned.rank >>= \rank -> Array.findIndex (\part -> part.lo <= rank && rank <= part.hi) parts)
+    case found of
+      [ Just part ] -> Just part
+      _ -> Nothing
 
   leavingAt :: Map Int Number
-  leavingAt = stacked _.from _.to routable
+  leavingAt = stacked true _.from _.to
   enteringAt :: Map Int Number
-  enteringAt = stacked _.to _.from routable
+  enteringAt = stacked false _.to _.from
 
   -- the middle of ribbon `place` on a box of its route
   middleOn :: Map Int Number -> Int -> String -> Number

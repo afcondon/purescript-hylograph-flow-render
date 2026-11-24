@@ -33,7 +33,7 @@ import Data.Foldable (all, foldl)
 import Data.Int (toNumber)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
-import Hylograph.Flow.Render.Engine (Box, Direction(..), Layout, PlacedNode, PlacedOutline)
+import Hylograph.Flow.Render.Engine (Box, Direction(..), Layout, PlacedNode, PlacedOutline, runAt, runsOf)
 import Hylograph.Flow.Render.Route (Curve, Piece(..), Point, Route(..))
 
 -- | Where each node's box is to be, and each outline's; and how large the
@@ -148,10 +148,12 @@ blend one other part =
   , nodes: Array.zipWith (\a b -> a { box = box a.box b.box }) one.nodes other.nodes
   , edges: Array.zipWith (\a b -> a { route = route a.route b.route, course = if part < 0.5 then a.course else b.course }) one.edges other.edges
   , outlines:
-      Array.mapMaybe (\a -> case Array.find (\b -> b.group == a.group) other.outlines of
-        Just b -> Just a { box = box a.box b.box, header = mix a.header b.header }
-        Nothing -> if part < 0.5 then Just a else Nothing) one.outlines
-        <> Array.filter (\b -> part >= 0.5 && not (Array.any (\a -> a.group == b.group) one.outlines)) other.outlines
+      -- an outline with the same group's outline of the same run (0.7: a
+      -- group may have one for each run of its members)
+      Array.mapMaybe (\a -> case runAt a.outline.group a.run other.outlines of
+        Just b -> Just a.outline { box = box a.outline.box b.box, header = mix a.outline.header b.header }
+        Nothing -> if part < 0.5 then Just a.outline else Nothing) (runsOf one.outlines)
+        <> (Array.filter (\b -> part >= 0.5 && runAt b.outline.group b.run one.outlines == Nothing) (runsOf other.outlines) <#> _.outline)
   , width: mix one.width other.width
   , height: mix one.height other.height
   }

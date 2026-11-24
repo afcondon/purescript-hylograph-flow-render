@@ -28,14 +28,20 @@
 -- |   breadth has room for, as the estimate has it (a single character too
 -- |   wide for the room aside); and the node is tall enough for them. Where
 -- |   it sets none, no node has any;
--- | - `Outlined`: there is one outline for each open group that holds a
+-- | - `Outlined`: there is an outline for each open group that holds a
 -- |   node, and none where the picture tells of no group; its members are
 -- |   the nodes the grouping puts in it, however deep; every member is
 -- |   inside its outline, under the strip for its name; an outline's parent
 -- |   is the nearest open group over it, and the outline is inside its
 -- |   parent's, under the parent's strip; the outlines of two groups
 -- |   overlap only where one holds the other; and no node that is not a
--- |   member is in an outline, or partly in it.
+-- |   member is in an outline, or partly in it. **A group may have several
+-- |   outlines (0.7)**, one for each run of its members where they stand in
+-- |   separate runs of tiers (the unfolding engine's tied outlines): then
+-- |   each member is in exactly one of them, they do not overlap one
+-- |   another, and each is inside one of its parent's. Until 0.7 the law
+-- |   asked for exactly one, which no layout of one outline to a group
+-- |   breaks now.
 -- |
 -- | **Promised laws** hold of the layouts of an engine that promises them
 -- | (`Hylograph.Flow.Render.Engine.Promise`), and are asked of no other
@@ -428,23 +434,29 @@ generalFaults given projection laid =
           Just parent -> [ parent.group ] <> ancestors parent
           Nothing -> []
       in
-        (if Array.sort (map _.group laid.outlines) == Array.sort wanted then [] else [ "the outlines are not the open groups that hold a node, each once" ])
+        (if Array.nub (Array.sort (map _.group laid.outlines)) == Array.sort wanted then [] else [ "the outlines are not the open groups that hold a node" ])
+          <> Array.concatMap
+            ( \group -> if Array.sort (Array.concatMap _.members (Array.filter (\outline -> outline.group == group) laid.outlines)) == membersOf group then [] else [ "the outline of " <> show group <> " has not the members the grouping gives it, each once" ])
+            (Array.nub (map _.group laid.outlines))
           <> Array.concatMap
             ( \outline ->
-                (if outline.members == membersOf outline.group then [] else [ called outline <> " has not the members the grouping gives it" ])
-                  <> (if parentOf outline.group == Just outline.parent then [] else [ called outline <> " has not for its parent the nearest open group over it" ])
+                (if parentOf outline.group == Just outline.parent then [] else [ called outline <> " has not for its parent the nearest open group over it" ])
                   <> Array.mapMaybe (\index -> if map (\box -> insideOf box (under outline)) (boxOf index) == Just true then Nothing else Just (called outline <> " does not hold its member, node " <> show index <> ", under its strip")) outline.members
                   <> case outline.parent of
                     Nothing -> []
-                    Just parent -> case outlineOf parent of
-                      Just outer -> if insideOf outline.box (under outer) then [] else [ called outline <> " is not inside its parent's, " <> show parent ]
-                      Nothing -> [ called outline <> " has a parent with no outline, " <> show parent ]
+                    Just parent -> case Array.filter (\outer -> outer.group == parent) laid.outlines of
+                      [] -> [ called outline <> " has a parent with no outline, " <> show parent ]
+                      outers -> if Array.any (\outer -> insideOf outline.box (under outer)) outers then [] else [ called outline <> " is not inside its parent's, " <> show parent ]
             )
             laid.outlines
           <> do
             a <- laid.outlines
             b <- laid.outlines
             if a.group < b.group && overlapping a.box b.box && not (Array.elem a.group (ancestors b)) && not (Array.elem b.group (ancestors a)) then [ called a <> " overlaps " <> called b <> ", and neither holds the other" ] else []
+          <> do
+            Tuple place a <- Array.mapWithIndex Tuple laid.outlines
+            b <- Array.drop (place + 1) laid.outlines
+            if a.group == b.group && overlapping a.box b.box then [ "two outlines of " <> show a.group <> " overlap" ] else []
           <> (strangers laid <#> \found -> describe found.node <> " is in " <> show found.group <> "'s outline and is no member of it")
 
 -- | Every fault against the law a promise is of; none is the law.

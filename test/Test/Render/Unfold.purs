@@ -118,7 +118,10 @@ tally direction = foldl add { flows: 0, cuts: 0, pairs: 0, held: 0, nested: 0, o
         in
           { rung: found.rung
           , fits
-          , forward: not (turnsBack shut) && not (turnsBack open) && not (Array.any (spansTiers open) (innerOutlines pair.group open))
+          -- 0.7: and the opened group's own parts stand in one run of tiers. A
+          -- group whose parts stand in separate runs is tied outlines, each
+          -- run where its own tiers put it, and has no one slot to fit.
+          , forward: not (turnsBack shut) && not (turnsBack open) && not (Array.any (spansTiers open) (innerOutlines pair.group open)) && Array.length (Array.filter (\outline -> outline.group == pair.group) open.outlines) <= 1
           , exact: not (Array.null found.bars) && all (\bar -> bar.abreast >= bar.breadth - 1.0e-6) found.bars
           , kept: keeps direction pair.group found.rung shut open
           , spoiled: case swapped direction shut open of
@@ -251,11 +254,11 @@ suite = do
   for_ [ LeftToRight, TopDown ] \direction -> do
     let found = tally direction
     log ("  " <> show direction <> ": " <> show found.flows <> " made flows, " <> show found.cuts <> " cuts, " <> show found.pairs <> " pairs of cuts that differ by one group: Held " <> show found.held <> ", Nested " <> show found.nested <> ", Ordered " <> show found.ordered <> ", Rearranged " <> show found.rearranged)
-    log ("    the parts fit a slot of the bar's breadth in " <> show found.fit <> " pairs and not in " <> show found.misfit <> " (" <> show found.misfitForward <> " of those with no ribbon turned back and no open group that spans tiers inside the opened one); in " <> show found.exact <> " some tier of parts adds up to the bar exactly")
+    log ("    the parts fit a slot of the bar's breadth in " <> show found.fit <> " pairs and not in " <> show found.misfit <> " (" <> show found.misfitForward <> " of those with no ribbon turned back, no open group that spans tiers inside the opened one, and the opened group's parts in one run of tiers); in " <> show found.exact <> " some tier of parts adds up to the bar exactly")
     log ("    the Sankey engine on the same pairs: Rearranged in " <> show found.plainRearranged)
     expectNone (show direction <> ": every cut's layout keeps the general laws and the engine's promises, and no pair breaks order") (Array.take 12 found.faults)
     expect (show direction <> ": Ordered, always: no pair is Rearranged") (found.rearranged == 0)
-    expect (show direction <> ": Nested, for breadth: the parts fit a slot as broad as the bar in every pair where no ribbon is turned back and no open group inside the opened one spans tiers") (found.misfitForward == 0)
+    expect (show direction <> ": Nested, for breadth: the parts fit a slot as broad as the bar in every pair where no ribbon is turned back, no open group inside the opened one spans tiers, and the opened group's parts stand in one run of tiers") (found.misfitForward == 0)
     expect (show direction <> ": no pair is given a rung it does not keep, checked again straight from the boxes") (found.unkept == 0)
     log ("    the open layout with two nodes of a tier made to change places: " <> show found.spoiled <> " pairs so spoiled, " <> show found.spoiledCaught <> " of them Rearranged")
     expect (show direction <> ": a layout that reorders fails the law: every pair so spoiled is Rearranged") (found.spoiled > 0 && found.spoiledCaught == found.spoiled)
