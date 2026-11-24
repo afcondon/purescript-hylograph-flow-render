@@ -14,6 +14,9 @@ import Hylograph.Flow.Render.Engine (Direction(..))
 import Hylograph.Flow.Render.Measures (Band, Banded, Drawn, againstTheFlow, crossings, overlaps, overlapsInOneColour, pictureProportion, proportions, squat, thresholds)
 import Hylograph.Flow (ElementKey(..), GroupId(..), ItemId(..), PortName(..), Projection, StepId(..), WireId(..))
 import Hylograph.Flow.Render.Unfold (gathered)
+import Hylograph.Flow.Grouping (Grouping(..))
+import Hylograph.Flow.Render.Signal (coloured, palette, shade)
+import Hylograph.Flow.Render.Tree (plainDecoration)
 import Hylograph.Flow.Render.Route (Ink(..), Piece(..), Point, Route(..), flatten)
 import Test.Render.Fixtures (expect)
 
@@ -166,8 +169,35 @@ readsOf found = Array.foldl (\total wire -> case wire.id of
   Reads _ _ _ -> total + wire.payload
   _ -> total) 0.0 (NonEmptyArray.toArray found.wires)
 
+-- a flow for colour: two sources in a group, one loose source, one sink
+tinted :: Projection Number
+tinted =
+  { nodes: map node [ "coal", "gas", "wind", "grid" ]
+  , edges: [ edge "coal" "grid", edge "gas" "grid", edge "wind" "grid" ]
+  }
+  where
+  node name = { key: StepKey (StepId name), label: name, inputs: [], outputs: [] }
+  edge from to =
+    { from: StepKey (StepId from), fromPort: Nothing, to: StepKey (StepId to), toPort: Nothing, via: []
+    , wires: NonEmptyArray.singleton { id: Writes (StepId from) (PortName "out") (ItemId (from <> to)), payload: 1.0 }
+    }
+
 suite :: Effect Unit
 suite = do
+  log "render: colour by default (0.7)"
+  let
+    dressed = coloured [ Group (GroupId "Fossil") "Fossil" [ Member (StepId "coal"), Member (StepId "gas") ] ] tinted plainDecoration
+    nodeColour name = (dressed.node { key: StepKey (StepId name), label: name, inputs: [], outputs: [] }).colour
+    edgeColours = map (\e -> (dressed.edge e).colour) tinted.edges
+  expect "the palette is five hues, no two alike" (Array.length palette == 5 && Array.length (Array.nub palette) == 5)
+  expect "a shade is the colour mixed with white or with black: half way to white, half way to black, and itself"
+    (shade 0.5 "#204060" == "#90a0b0" && shade (-0.5) "#204060" == "#102030" && shade 0.0 "#204060" == "#204060")
+  expect "a group's two parts are two shades of the first hue, the darker first; the loose source is the second hue; the sink, which gives nothing, is left in the ink"
+    (nodeColour "coal" == (shade (-0.3) <$> Array.index palette 0) && nodeColour "gas" == (shade 0.45 <$> Array.index palette 0) && nodeColour "wind" == Array.index palette 1 && nodeColour "grid" == Nothing)
+  expect "a ribbon takes the colour of where it comes from" (edgeColours == map nodeColour [ "coal", "gas", "wind" ])
+  expect "the closed group's bar is the group's hue itself"
+    ((dressed.node { key: StepKey (GroupStep (GroupId "Fossil")), label: "Fossil", inputs: [], outputs: [] }).colour == Array.index palette 0)
+
   log "render: parallel ribbons from a closed group are one ribbon (0.7)"
   let found = gathered losing
   expect "the three ribbons from Process to the loss become one, in the place of the first; the two into Process, which come from an open node, stay two"
