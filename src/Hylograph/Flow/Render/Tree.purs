@@ -343,6 +343,11 @@ treeLabelled labels decoration laid =
     let
       nameSize = 11.0
       tabWidth = min outline.box.width (16.0 + heavier * estimateWidth nameSize outline.name)
+      -- the name takes gestures through its tab; where the outline has no
+      -- strip for it at all (the unfolding engine's inner outlines, which
+      -- take no room), the tab is as tall as the name, about the outline's
+      -- top, so that it can be pointed at (0.6; any strip is as it was)
+      tabHeight = if outline.header > 0.0 then outline.header else nameSize + 1.0
     in
       withBehaviors (gestures (PointedGroup outline.group)) $
         elem Group
@@ -368,9 +373,9 @@ treeLabelled labels decoration laid =
           , elem Rect
               [ staticStr "class" "flow-outline-tab"
               , Friendly.x outline.box.x
-              , Friendly.y outline.box.y
+              , Friendly.y (outline.box.y + outline.header / 2.0 - tabHeight / 2.0)
               , Friendly.width tabWidth
-              , Friendly.height outline.header
+              , Friendly.height tabHeight
               , Friendly.fill paper
               , staticStr "fill-opacity" "0"
               , staticStr "pointer-events" "all"
