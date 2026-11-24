@@ -40,30 +40,18 @@
 -- |
 -- | THE MACHINERY is `hylograph-transitions`: `watched` gives a
 -- | `TransitionSpec` of layouts (its engine's, with its easings), whose
--- | tick is pure; `watch` runs one on its `Coordinator`, drawing each
--- | value. Nothing here keeps time of its own.
--- |
--- | `watch` is the one thing here that the ecosystem already has: a
--- | consumer that ticks a transition and hands on its value is
--- | `transitionConsumer`, in `hylograph-simulation`
--- | (`Hylograph.Transition.Consumers`). It is here as well so that this
--- | package need not depend on the simulation package (the force
--- | simulation, and what that depends on) for ten lines; a page that
--- | already has that package can give `watched`'s spec to
--- | `transitionConsumer` instead and not call `watch` at all, as the lab
--- | page `sverdrup-unfold` does. (Since 1.0.0 that package has no D3 in
--- | it. Package set 77.13.1 still resolves it to 0.5.0, which has, and
--- | which cannot be bundled without `d3-force`: pin 1.1.0, and
--- | `hylograph-forces` 0.1.0 with it.) `watch` should go when
--- | `transitionConsumer` lives in `hylograph-transitions`, which it needs
--- | nothing else to do; whether to drop it sooner is a decision not taken
--- | here.
+-- | tick is pure. Nothing here keeps time, and nothing here runs: a page
+-- | runs the spec with that library's own consumer of a transition,
+-- | `Hylograph.Transition.Consumers.transitionConsumer` (in
+-- | `hylograph-transitions` since 0.1.1), on its `Coordinator`. Until 0.7
+-- | this module had a runner of its own, `watch`, because that consumer
+-- | lived in `hylograph-simulation`; it is gone, and this package depends
+-- | on no simulation.
 module Hylograph.Flow.Render.Transition
   ( Stage
   , stages
   , frame
   , watched
-  , watch
   ) where
 
 import Prelude
@@ -75,12 +63,9 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Number (abs)
 import Data.Tuple (Tuple(..))
-import Effect (Effect)
-import Effect.Ref as Ref
 import Hylograph.Flow.Render.Continuity (opened)
 import Hylograph.Flow.Render.Engine (Box, Direction(..), Layout)
 import Hylograph.Flow.Render.Reshape (blend, reshaped, sameShape)
-import Hylograph.Transition.Coordinator (ConsumerId, Coordinator, TickResult(..), register)
 import Hylograph.Transition.Easing (EasingType(..), toFunction)
 import Hylograph.Transition.Engine (TransitionConfig, TransitionSpec)
 import Hylograph.Transition.Engine as Engine
@@ -187,18 +172,3 @@ watched config found = do
   last <- Array.last found
   pure $ Engine.transitionWith (\_ to part -> fromMaybe to (frame config.easing found part)) { from: first.from, to: last.to }
     { duration: config.duration * toNumber (Array.length found), easing: Linear, delay: config.delay }
-
--- | Run a transition on a coordinator: `draw` is given each value as it
--- | comes, the last of them the transition's end exactly, and then `done`
--- | is run. (The coordinator must be started; it goes on asking for frames
--- | when it has no consumer, so stop it when nothing is left to watch.)
-watch :: forall a. Coordinator -> TransitionSpec a -> (a -> Effect Unit) -> Effect Unit -> Effect ConsumerId
-watch coordinator spec draw done = do
-  state <- Ref.new (Engine.start spec)
-  register coordinator
-    { tick: \delta -> do
-        now <- Ref.modify (Engine.tick delta) state
-        if Engine.isComplete now then draw spec.to $> Completed
-        else draw (Engine.currentValue now) $> StillRunning
-    , onComplete: done
-    }
