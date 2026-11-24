@@ -236,6 +236,13 @@ each breaking one of the laws 0.4 added.
 | `Hylograph.Flow.Render.Columns` | The columns engine (0.4): `columns :: Spacing -> Scaling wire -> Engine wire`, `Spacing`, `defaultSpacing`. Nodes sized by the picture, in a column for each layer; ribbons from port to port at one scale. Promises `FlowsForward`, `LayersAligned`, `KeepsFixed`, `WidthsScaled`; draws no outlines. Its header says why it is an engine of its own and not the Sankey engine taught ports. |
 | `Hylograph.Flow.Render.Route` | `Route = Ribbon … \| Polyline … \| Spline …`, and what is read from one: `start`, `end`, `svgPath`, `flatten`, `length`, `bends`. |
 | `Hylograph.Flow.Render.Sankey` | The Sankey engine: `sankey :: Metrics -> Widths wire -> Engine wire`, and since 0.5 `sankeyToward :: Direction -> Metrics -> Widths wire -> Engine wire` (top-down), with `Metrics`, `Widths`, `defaultMetrics`, `widthOf` as its own configuration. Pure, so it runs anywhere, without a DOM. Its header says how a group's members are kept together and what `hylograph-layout` does not offer for it. |
+| `Hylograph.Flow.Render.Unfold` | The unfolding engine (0.6): `unfolding :: Direction -> Metrics -> Widths wire -> Whole wire -> Engine wire`, `Whole`, `Plan`, `plan`, `unfoldingBy`, `groupBreadth`, `rankOf`. One layout for every cut of a flow, so that two cuts' layouts can be laid side by side. |
+| `Hylograph.Flow.Render.Continuity` | `continuity`, `Continuity(..)`, `change`, `Change`, `Bar`, `opened` (0.6): what two layouts of two cuts keep, measured. |
+| `Hylograph.Flow.Render.Reshape` | `reshaped`, `blend`, `sameShape` (0.6): a layout on the way to being another. |
+| `Hylograph.Flow.Render.Transition` | `stages`, `Stage`, `frame`, `watched`, `watch` (0.6): a change of cut watched in stages, on `hylograph-transitions`. |
+| `Hylograph.Flow.Render.Present` | `present`, `quietKeys`, `quietly`, `quietClass` (0.6): nothing hidden, the folded drawn quiet, never narrower. |
+| `Hylograph.Flow.Render.Signal` | `hued`, `hueOf`, `groupsOver` (0.6): a group's hue on its bar and its parts. |
+| `Hylograph.Flow.Render.Motion` | `prefersReducedMotion` (0.6). Foreign; needs a window. |
 | `Hylograph.Flow.Render.Layout` | 0.2's door: `layout :: Metrics -> Widths wire -> Projection wire -> Layout wire`, and the names 0.2 imported from here, re-exported. |
 | `Hylograph.Flow.Render.Text` | `estimateWidth`, `wrap`, `setWords`, `Lettering`, `heightOf`, `breadthOf`: text set without measuring it. |
 | `Hylograph.Flow.Render.Keys` | `pressByKeys` (0.5): Enter and Space on a focused button of a drawn flow are a click. The one foreign module; needs a document. |
@@ -259,6 +266,96 @@ svg.flow[data-direction=left-to-right|top-down]
                    > g.flow-inside[transform] > (the caller's),
                      rect.flow-port.flow-port-in|.flow-port-out[data-port]*
 ```
+
+## Changes in 0.6.0
+
+Not published. Stages 1 and 2 of `docs/kb/plans/flow-unfolding.md`: one
+chart that holds the most detail and shows as much as is wanted. Made
+against a lab page (`sverdrup-unfold`) that opens and closes the groups of
+three data sets; everything here is held by this package's own tests on
+flows made by rule, and by that page's on its own.
+
+**What 0.5.0 said was not here is here**: a group opened in place, with
+the rest of the picture keeping its place.
+
+Added:
+
+- **The unfolding engine** (`Hylograph.Flow.Render.Unfold`): `unfolding ::
+  Direction -> Metrics -> Widths wire -> Whole wire -> Engine wire`, where
+  `Whole = { grouping, finest }` is the flow whatever the cut: its grouping
+  and its projection with nothing closed. It is run, like any engine, on
+  the projection of any cut (`collapse grouping closed flow`) with the
+  picture told which groups are closed. Every cut's layout is a function
+  of the cut alone, made of three things no cut changes: **one order**
+  across the flow in which every group's nodes are neighbours; **one
+  breadth for each group**, the heaviest set of its nodes and inner
+  ribbons no two of which are on one path (or what crosses its boundary
+  one way, where that is more), which is the breadth of its bar when it is
+  closed and of its band when it is open; and **one rule for gaps**
+  (`nodeGap` between top-level blocks, nothing between the parts of one).
+  The placing is a packing, with no relaxation. A node that feeds nothing
+  stands in the last tier. Its header says exactly what is kept and what
+  is not. It promises `FlowsForward`, `LayersAligned` and `WidthsCarried`,
+  sets no words, and is made left to right and stood on end for top-down,
+  as the Sankey engine is.
+- **`Hylograph.Flow.Render.Continuity`**: `continuity :: Layout wire ->
+  Layout wire -> Continuity`, the best rung two layouts of two cuts keep,
+  measured from the two layouts alone: `Held` (every untouched node keeps
+  its box exactly), `Nested` (each opened group's parts lie within the
+  span its closed bar had), `Ordered` (no two nodes of a tier and no two
+  ribbons at a node change order), `Rearranged` (none of these). `change`
+  gives everything measured (the nodes that moved, each bar with its
+  breadth and the slot its parts need, what is unaccounted for, each
+  breach of order in words); `opened` pairs each bar with its parts.
+- **`Promise.WidthsCarried` and `Law.Carried`**: as `WidthsConserved` and
+  `Conservation`, but a node is *at least* as broad as its broader side. A
+  closed group can be broader than its ribbons: a loop inside it, or a
+  spring beside a dead end, is more than crosses its boundary.
+- **`Hylograph.Flow.Render.Reshape`**: `reshaped` (a layout with its boxes
+  moved and its ribbons gone with the sides they stand on) and `blend`
+  (two layouts of one shape, part of the way from one to the other). What
+  they keep is conservation: a ribbon is as broad as it was and stands
+  where it stood on its node's side.
+- **`Hylograph.Flow.Render.Transition`**: `stages` of a change between two
+  cuts (make room, then unfold; fold, then close up), each two layouts of
+  one shape; `frame` (the picture part of the way through); `watched` (the
+  stages as a `TransitionSpec` of `hylograph-transitions`' engine) and
+  `watch` (one run on its `Coordinator`). No clock of its own.
+- **`Hylograph.Flow.Render.Present`**: Present mode. `present` shortens the
+  nodes of the quiet groups along the flow and never narrows anything;
+  `quietly` marks them `flow-quiet`.
+- **`Hylograph.Flow.Render.Signal`**: `hued` and `hueOf`: a group's hue on
+  its bar and on its parts.
+- **`Hylograph.Flow.Render.Motion`**: `prefersReducedMotion` (the second
+  foreign module).
+- **`Tree.treeLabelled :: Labels -> Decoration wire -> Layout wire -> Tree`**
+  (`Within`, as ever, or `Beside least`: each label beside its bar, on the
+  paper; none for a bar under `least` pixels; steps as bars with square
+  corners). `tree = treeLabelled Within`.
+- **`Sankey.stoodOnEnd`** exported (a left-to-right layout stood on end).
+- **An outline with no strip for its name** (`PlacedOutline.header` of 0,
+  which only the unfolding engine makes, for a group inside a group) has
+  its name written up its own margin along the flow, or on its top edge
+  after the names over it where it has no such margin. An outline with a
+  strip is drawn as it was.
+
+Not here: a grouping over what wires carry (stage 3), choosers of a cut
+(stage 4), tier elision (stage 5); a transition for a change that opens
+some groups and closes others (take it one group at a time); tiers of a
+quiet group drawn nearer together in Present mode.
+
+Breaking, against 0.5.0:
+
+- **`Promise` has the constructor `WidthsCarried`, and `Law` the
+  constructor `Carried`**, so a `case` over either without a wildcard
+  needs a branch for it.
+- **The package depends on `hylograph-transitions`** (0.1.0, which
+  `hylograph-selection` already brought) **and on `refs`.**
+- Nothing else: `Decoration`, `Picture`, `Layout` and every engine there
+  was are as they were. Every layout the Sankey engine makes is, to the
+  number, what 0.5.0 made, left to right and top-down (240 layouts of the
+  suite's made flows, compared by digest before and after), and 0.5.0's
+  suites pass unchanged.
 
 ## Changes in 0.5.0
 
@@ -460,10 +557,10 @@ spago install hylograph-flow-render
 ```
 
 It depends on `hylograph-flow` (0.2.0 or later), `hylograph-layout` (0.6.0 or later),
-`hylograph-graph` (0.3.1 or later) and `hylograph-selection` (0.6.0 or
-later), and on `arrays`, `effect`, `foldable-traversable`, `integers`,
-`maybe`, `numbers`, `ordered-collections`, `prelude`, `strings` and
-`tuples`. It does not depend on any other layout engine: an engine built
+`hylograph-graph` (0.3.1 or later), `hylograph-selection` (0.6.0 or
+later) and `hylograph-transitions` (0.1.0 or later), and on `arrays`,
+`effect`, `foldable-traversable`, `integers`, `maybe`, `numbers`,
+`ordered-collections`, `prelude`, `refs`, `strings` and `tuples`. It does not depend on any other layout engine: an engine built
 on another library lives with that library's user.
 
 ## Running the tests
@@ -498,7 +595,18 @@ is the string written down). And it reads the HATS tree back, checking
 one mark for each placed node, one path for each placed edge along its
 route, one square for each placed port, one outline for each open group,
 either direction, and the caller's decoration, overlay and gestures on
-the element they were said of.
+the element they were said of. And it holds the unfolding engine (0.6,
+`Test.Render.Unfold`) on sixty flows made by rule from a seed
+(`Test.Render.Generated`: layered, with a nested grouping whose groups
+take their members from any tiers), both directions: every cut of each
+(1,122) to the general laws and the engine's promises; every pair of cuts
+that differ by one group (2,667) to order, with no pair `Rearranged`; the
+parts of an opened group to a slot as broad as its bar wherever that is
+promised; every rung `continuity` gives checked again straight from the
+boxes; the open layout with two nodes made to change places `Rearranged`
+every time; every change watched, eleven pictures through it, each
+carrying its widths and meeting its nodes; and Present mode narrowing
+nothing.
 
 ## Licence
 
