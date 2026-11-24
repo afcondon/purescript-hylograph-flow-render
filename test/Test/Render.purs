@@ -25,6 +25,7 @@ import Test.Render.Down as Down
 import Test.Render.Engines as Engines
 import Test.Render.Example as Example
 import Test.Render.Groups as Groups
+import Test.Render.Legible as Legible
 import Test.Render.Measures as Measures
 import Test.Render.Tree as Tree
 import Test.Render.Unfold as Unfold
@@ -100,4 +101,5 @@ main = do
   Measures.suite
   Example.suite
   Unfold.suite
+  Legible.suite
   log "render: all green"
