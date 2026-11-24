@@ -551,7 +551,7 @@ treeWith dress decoration laid =
       tabWidth = if upright then margin else if stripless then nameWidth outline.name else min outline.box.width (nameWidth outline.name)
       indent = if stripless && not upright then indentOf outline else 0.0
       labelX = if upright then outline.box.x + margin / 2.0 else outline.box.x + indent + 8.0
-      labelY = if upright then outline.box.y + 4.0 else outline.box.y + outline.header / 2.0 + 1.0
+      labelY = if upright then outline.box.y + 4.0 else if dress.headings then outline.box.y + outline.header / 2.0 else outline.box.y + outline.header / 2.0 + 1.0
     in
       withBehaviors (gestures (PointedGroup outline.group)) $
         elem Group
@@ -721,7 +721,9 @@ treeWith dress decoration laid =
             []
         in
           case laid.direction of
-            LeftToRight | isHeaded -> plain "flow-label flow-label-heading" "start" n.box.x (n.box.y - 5.0)
+            -- in the middle of a strip of 14 pixels over the bar, and as far
+            -- in as an outline's name is: where its open name will be
+            LeftToRight | isHeaded -> plain "flow-label flow-label-heading" "start" (n.box.x + 2.0) (n.box.y - 7.0)
             LeftToRight ->
               if n.box.x + n.box.width + 6.0 + long <= laid.width then plain "flow-label flow-label-beside" "start" (n.box.x + n.box.width + 6.0) middle
               else plain "flow-label flow-label-beside" "end" (n.box.x - 6.0) middle
