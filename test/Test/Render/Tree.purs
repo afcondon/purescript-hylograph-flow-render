@@ -23,7 +23,7 @@ import Hylograph.Flow.Render.Engine as Engine
 import Hylograph.Flow.Render.Layout (Course(..), Layout, Widths(..), defaultMetrics, layout, portPoint)
 import Hylograph.Flow.Render.Route (Route(..))
 import Hylograph.Flow.Render.Route as Route
-import Hylograph.Flow.Render.Tree (Decoration, Gesture, Pointed(..), directionName, groupName, groupOf, keyName, plainDecoration, pointedBy, portSide, strokeOf, tree, withGroups, withOverlay)
+import Hylograph.Flow.Render.Tree (Bands(..), Decoration, Gesture, Pointed(..), directionName, groupName, groupOf, keyName, plainDecoration, pointedBy, portSide, strokeOf, tree, withGroups, withOverlay)
 import Hylograph.Flow.Render.Tree as Gesture
 import Hylograph.HATS (ElementType(..))
 import Test.Render.Fixtures (drawings, expect, expectNone, flowOf, quantity, sankeyMetrics, single, subjects, weighted)
@@ -224,6 +224,7 @@ dressed notify =
   , notify
   , inside: const Nothing
   , button: const Nothing
+  , bands: Stroked
   }
 
 quiet :: Gesture -> Pointed -> Effect Unit

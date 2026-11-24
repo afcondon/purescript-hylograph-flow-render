@@ -66,7 +66,7 @@
 -- |   g.flow-outlines > g.flow-outline[data-group][data-depth]
 -- |                       > rect.flow-outline-box, rect.flow-outline-tab, text.flow-outline-label
 -- |   g.flow-edges > path.flow-edge.flow-ribbon|.flow-polyline|.flow-spline
--- |                    .flow-band|.flow-hairline[.flow-backward][data-edge][data-from][data-to]
+-- |                    .flow-band|.flow-hairline[.flow-backward][.flow-swept][data-edge][data-from][data-to]
 -- |   g.flow-nodes > g.flow-node.flow-item|.flow-step[.flow-lettered][data-key]
 -- |                    > rect.flow-box, rect.flow-swatch?, text.flow-label,
 -- |                      text.flow-label-more*, text.flow-detail*, text.flow-note?,
@@ -79,6 +79,7 @@ module Hylograph.Flow.Render.Tree
   , Line
   , Gesture(..)
   , Pointed(..)
+  , Bands(..)
   , Decoration
   , plainDecoration
   , withOverlay
@@ -147,20 +148,41 @@ instance Show Pointed where
     PointedPath p -> "(PointedPath " <> show p.from <> " " <> show p.via <> " " <> show p.to <> ")"
     PointedGroup group -> "(PointedGroup " <> show group <> ")"
 
+-- | How a ribbon that is a band is drawn (0.5).
+-- |
+-- | - `Stroked`: one path along its centre line, stroked as broad as the
+-- |   ribbon is, as since 0.1. Right where a ribbon runs nearly straight
+-- |   along the flow. Where it slants it is too thin, and its ends are not
+-- |   flat on its nodes, because a stroke is broad across the line and not
+-- |   across the flow: a ribbon 200 pixels broad that shifts 150 across in
+-- |   a run of 90 bulges past both nodes.
+-- | - `Swept`: the area the ribbon's span on its source sweeps to its span
+-- |   on its target (`Route.sweptPath`), filled and not stroked: flat on
+-- |   both nodes, and as broad across the flow all the way as the ribbon
+-- |   is. Its colour is then its `fill`, which is what a stylesheet must
+-- |   set. A band turned back to close a cycle, which runs both ways along
+-- |   the flow, is stroked either way; so is a ribbon too thin to be drawn
+-- |   as a band (3 pixels or less), which is a line.
+data Bands = Stroked | Swept
+
+derive instance Eq Bands
+
 -- | `inside` (0.4): a node's inside, drawn by the caller in the node's own
 -- | coordinates, for the nodes it draws; see the module's header.
 -- | `button` (0.5): the marks that are buttons for the keyboard, each with
 -- | the name it is announced by; `Nothing` for a mark that is none.
+-- | `bands` (0.5): how a ribbon that is a band is drawn.
 type Decoration wire =
   { node :: Node -> Mark
   , edge :: Edge wire -> Line
   , notify :: Gesture -> Pointed -> Effect Unit
   , inside :: Node -> Maybe Tree
   , button :: Pointed -> Maybe String
+  , bands :: Bands
   }
 
 -- | Each node under its own label, nothing else said, gestures ignored, no
--- | inside drawn by the caller, no mark a button.
+-- | inside drawn by the caller, no mark a button, bands stroked.
 plainDecoration :: forall wire. Decoration wire
 plainDecoration =
   { node: \node -> { label: node.label, note: Nothing, className: "", colour: Nothing }
@@ -168,6 +190,7 @@ plainDecoration =
   , notify: \_ _ -> pure unit
   , inside: const Nothing
   , button: const Nothing
+  , bands: Stroked
   }
 
 -- | A decoration changed by what an overlay knows: of a node, by its key;
@@ -348,6 +371,11 @@ tree decoration laid =
   isBand :: PlacedEdge wire -> Boolean
   isBand e = strokeOf e.route > 3.0
 
+  isBandRibbon :: Route -> Boolean
+  isBandRibbon = case _ of
+    Ribbon ribbon -> ribbon.ink == Band
+    _ -> false
+
   kindOf :: Route -> String
   kindOf = case _ of
     Ribbon _ -> "flow-ribbon"
@@ -359,19 +387,34 @@ tree decoration laid =
     let
       line = decoration.edge e.edge
       backward = e.course == Backward
+      swept = decoration.bands == Swept && isBand e && not backward && isBandRibbon e.route
+      -- one pixel across the flow
+      across = case laid.direction of
+        LeftToRight -> { x: 0.0, y: 1.0 }
+        TopDown -> { x: 1.0, y: 0.0 }
     in
       withBehaviors (gestures (pointedBy e.edge)) $
         elem Path
-          ( [ staticStr "class" (classes [ "flow-edge", kindOf e.route, if backward then "flow-backward" else "", if isBand e then "flow-band" else "flow-hairline", line.className ])
+          ( [ staticStr "class" (classes [ "flow-edge", kindOf e.route, if backward then "flow-backward" else "", if isBand e then "flow-band" else "flow-hairline", if swept then "flow-swept" else "", line.className ])
             , staticStr "data-edge" (show e.index)
             , staticStr "data-from" (keyName e.edge.from)
             , staticStr "data-to" (keyName e.edge.to)
-            , Friendly.d (Route.svgPath e.route)
-            , Friendly.fill "none"
-            , Friendly.stroke (fromMaybe ink line.colour)
-            , Friendly.strokeWidth (strokeOf e.route)
-            , Friendly.strokeOpacity (if isBand e then "0.22" else "1")
             ]
+              <>
+                ( if swept then
+                    [ Friendly.d (Route.sweptPath across e.route)
+                    , Friendly.fill (fromMaybe ink line.colour)
+                    , Friendly.fillOpacity "0.22"
+                    , Friendly.stroke "none"
+                    ]
+                  else
+                    [ Friendly.d (Route.svgPath e.route)
+                    , Friendly.fill "none"
+                    , Friendly.stroke (fromMaybe ink line.colour)
+                    , Friendly.strokeWidth (strokeOf e.route)
+                    , Friendly.strokeOpacity (if isBand e then "0.22" else "1")
+                    ]
+                )
               <> (if backward && not (isBand e) then [ staticStr "stroke-dasharray" "5 4" ] else [])
               <> buttonOf (pointedBy e.edge)
           )

@@ -59,6 +59,7 @@ module Hylograph.Flow.Render.Route
   , numbers
   , transpose
   , svgPath
+  , sweptPath
   , hopRadius
   , distance
   , cross
@@ -274,3 +275,35 @@ svgPath = case _ of
       hop reach = " L" <> at (pointAt (reach - hopRadius)) <> " A" <> toString hopRadius <> "," <> toString hopRadius <> " 0 0 1 " <> at (pointAt (reach + hopRadius))
     in
       Array.fold (map hop clear) <> " L" <> at b
+
+-- | A ribbon as the `d` of the area it sweeps (0.5): its span on its
+-- | source, carried along its centre line to its span on its target. `across`
+-- | is one pixel across the flow ({ x: 0, y: 1 } where the flow runs left
+-- | to right, { x: 1, y: 0 } top-down); the outline is the centre line set
+-- | half the breadth to one side, the end, and the centre line set half the
+-- | breadth to the other side and run backwards, closed. So both ends are
+-- | flat on their nodes' sides, and the area is exactly its breadth across
+-- | the flow all the way, however much it slants, which a line stroked as
+-- | broad as the ribbon is not: a stroke is broad across the line. A route
+-- | that is no ribbon has no breadth to sweep, and its path is `svgPath`'s.
+sweptPath :: Point -> Route -> String
+sweptPath across = case _ of
+  Ribbon ribbon ->
+    let
+      half = ribbon.breadth / 2.0
+      set side point = { x: point.x + side * half * across.x, y: point.y + side * half * across.y }
+      at point = toString point.x <> "," <> toString point.y
+      -- each piece with where it starts
+      legs = (foldl (\state piece -> { from: endOf piece, found: Array.snoc state.found { from: state.from, piece } }) { from: ribbon.from, found: [] } (NonEmptyArray.toArray ribbon.pieces)).found
+      endOf = case _ of
+        Straight to -> to
+        Curved curve -> curve.to
+      out leg = case leg.piece of
+        Straight to -> " L" <> at (set (-1.0) to)
+        Curved curve -> " C" <> at (set (-1.0) curve.leaving) <> " " <> at (set (-1.0) curve.arriving) <> " " <> at (set (-1.0) curve.to)
+      back leg = case leg.piece of
+        Straight _ -> " L" <> at (set 1.0 leg.from)
+        Curved curve -> " C" <> at (set 1.0 curve.arriving) <> " " <> at (set 1.0 curve.leaving) <> " " <> at (set 1.0 leg.from)
+    in
+      "M" <> at (set (-1.0) ribbon.from) <> Array.fold (map out legs) <> " L" <> at (set 1.0 (end (Ribbon ribbon))) <> Array.fold (map back (Array.reverse legs)) <> " Z"
+  other -> svgPath other

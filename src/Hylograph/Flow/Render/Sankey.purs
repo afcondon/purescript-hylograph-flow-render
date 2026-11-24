@@ -118,6 +118,17 @@
 -- |   none, so a picture of forward edges begins at its first row and ends
 -- |   at its last, and a page can stand something directly under it.
 -- |
+-- | And one thing is done top-down that is not done left to right: **the
+-- | layers are straightened** after room is made. Making room moves boxes
+-- | one way only, after the Sankey layout has placed each layer against its
+-- | neighbours; so a row of thin ribbons under long names is spread out,
+-- | the row they run to is not, and every ribbon between them slants the
+-- | same way. Top-down each layer is then moved once more, whole, by the
+-- | mean of how far its edges from earlier layers are from straight, each
+-- | weighed by its breadth (the layers an outline spans move as one). Left
+-- | to right it is left as it was, so that no picture made before 0.5
+-- | moves; the header's last paragraph above says what that costs.
+-- |
 -- | The shelf of nodes no edge touches, under the picture left to right, is
 -- | at its right top-down.
 module Hylograph.Flow.Render.Sankey
@@ -148,7 +159,7 @@ import DataViz.Layout.Sankey.Types (Alignment(..), LinkColorMode(..), SankeyConf
 import DataViz.Layout.Sankey.Whole (Sizing(..), WholeLayout, computeWholeLayout)
 import Hylograph.Flow (Edge, ElementKey, GroupId(..), Projection)
 import Hylograph.Flow.Render.Engine (Course(..), Direction(..), Engine(..), Layout, Picture, Promise(..), openPaths)
-import Hylograph.Flow.Render.Internal.Bands (Block(..), arrange)
+import Hylograph.Flow.Render.Internal.Bands (Arranged, Block(..), arrange)
 import Hylograph.Flow.Render.Route (Ink(..), Piece(..), Point, Route(..))
 import Hylograph.Flow.Render.Route as Route
 import Hylograph.Flow.Render.Text (SetWords, breadthOf, heightOf, setWords)
@@ -237,7 +248,7 @@ laidOut direction metrics widths given projection = case direction of
     , outlines
     , width: lead + trail + foldl max (foldl (\acc n -> max acc n.x1) placed.chart.x1 placed.isolated) (map (\n -> n.box.x - lead + n.box.width) stood)
     , height:
-        if Array.null chartBoxes then foldl (\acc n -> max acc (n.y1 + sink)) arranged.bottom placed.isolated
+        if Array.null chartBoxes then foldl (\acc n -> max acc (n.y1 + sink)) settled.bottom placed.isolated
         else placed.extent.y1 + sink
     }
 
@@ -445,6 +456,81 @@ laidOut direction metrics widths given projection = case direction of
     }
     blocks
 
+  -- ---- layers straightened (top-down) ------------------------------------------------
+  -- Room is made by moving boxes one way only, and the Sankey layout, which
+  -- placed each layer against its neighbours, knows nothing of it: a layer
+  -- whose nodes were made broader for their words is left spread out over
+  -- a next layer that was not moved, and every edge between them slants
+  -- the same way. Top-down, where words broaden nodes as a rule, each layer
+  -- is therefore moved once more, whole: by the mean of how far its edges
+  -- from earlier layers are from running straight, each edge weighed by
+  -- its breadth. A layer moves rigidly, so nothing within it changes; the
+  -- layers an outline spans move as one, so no outline is bent; and the
+  -- least move is taken from all, so that again nothing has moved back.
+  -- (Left to right this is not done: no picture made before 0.5 moves.)
+  settled :: Arranged
+  settled = case direction of
+    TopDown | active && not (Array.null blocks) -> straightened
+    _ -> arranged
+
+  layerOfBox :: String -> Int
+  layerOfBox name = case Map.lookup name boxOf of
+    Just box -> box.layer
+    Nothing -> strayLayer name
+
+  -- a layer an outline reaches from the layer before is one with it
+  unitOf :: Map Int Int
+  unitOf =
+    let
+      last = foldl (\most name -> max most (layerOfBox name)) 0 (Array.fromFoldable (Map.keys arranged.tops))
+      glued layer = Array.any (\frame -> frame.firstLayer < layer && layer <= frame.lastLayer) arranged.frames
+    in
+      foldl (\units layer -> Map.insert layer (if glued layer then fromMaybe layer (Map.lookup (layer - 1) units) else layer) units) Map.empty (Array.range 0 last)
+
+  unitAt :: Int -> Int
+  unitAt layer = fromMaybe layer (Map.lookup layer unitOf)
+
+  -- each forward edge, layer to layer: where it stands on each of its two
+  -- boxes as room was made, and how broad it is
+  spans :: Array { from :: Int, to :: Int, slant :: Number, breadth :: Number }
+  spans =
+    let
+      before = liftsFrom arranged.tops
+      liftOf name = fromMaybe 0.0 (Map.lookup name before)
+    in
+      placed.routes >>= \route -> route.segments # Array.mapMaybe \link -> ado
+        source <- findNode chartBoxes link.sourceIndex
+        target <- findNode chartBoxes link.targetIndex
+        in { from: unitAt source.layer, to: unitAt target.layer, slant: (link.y0 + liftOf source.name) - (link.y1 + liftOf target.name), breadth: link.width }
+
+  moves :: Map Int Number
+  moves =
+    let
+      units = Array.nub (Array.sort (Array.fromFoldable (Map.values unitOf)))
+      pulled found unit =
+        let
+          entering = Array.filter (\span -> span.to == unit && span.from < unit && span.breadth > 0.0) spans
+          weight = sum (map _.breadth entering)
+          pull = sum (entering <#> \span -> span.breadth * (span.slant + fromMaybe 0.0 (Map.lookup span.from found)))
+        in
+          Map.insert unit (if weight > 0.0 then pull / weight else 0.0) found
+      raw = foldl pulled Map.empty units
+      least = foldl min 0.0 (Array.fromFoldable (Map.values raw))
+    in
+      map (_ - least) raw
+
+  moveOf :: Int -> Number
+  moveOf layer = fromMaybe 0.0 (Map.lookup (unitAt layer) moves)
+
+  straightened :: Arranged
+  straightened =
+    let
+      tops = Map.fromFoldable ((Map.toUnfoldable arranged.tops :: Array (Tuple String Number)) <#> \(Tuple name top) -> Tuple name (top + moveOf (layerOfBox name)))
+      frames = arranged.frames <#> \frame -> frame { top = frame.top + moveOf frame.firstLayer, bottom = frame.bottom + moveOf frame.firstLayer }
+      lowest = foldl (\most (Tuple name top) -> max most (top + fromMaybe 0.0 (Map.lookup name heights))) 0.0 (Map.toUnfoldable tops :: Array (Tuple String Number))
+    in
+      { tops, frames, bottom: foldl (\most frame -> max most frame.bottom) lowest frames }
+
   heights :: Map String Number
   heights = Map.fromFoldable (blocks >>= sized)
     where
@@ -454,16 +540,19 @@ laidOut direction metrics widths given projection = case direction of
 
   -- where a box's top is, and how tall it is: the Sankey layout's unless moved
   topOf :: String -> Number -> Number
-  topOf name was = fromMaybe was (Map.lookup name arranged.tops)
+  topOf name was = fromMaybe was (Map.lookup name settled.tops)
 
   heightAt :: String -> Number -> Number
   heightAt name was = fromMaybe was (Map.lookup name heights)
 
   -- how far what stands on a box's side has moved: with the box, and to
   -- the middle of a side grown taller
+  liftsFrom :: Map String Number -> Map String Number
+  liftsFrom tops = Map.fromFoldable $ chartBoxes # Array.mapMaybe \n ->
+    if active then Just (Tuple n.name (fromMaybe n.y0 (Map.lookup n.name tops) - n.y0 + (heightAt n.name (n.y1 - n.y0) - (n.y1 - n.y0)) / 2.0)) else Nothing
+
   lifts :: Map String Number
-  lifts = Map.fromFoldable $ chartBoxes # Array.mapMaybe \n ->
-    if active then Just (Tuple n.name (topOf n.name n.y0 - n.y0 + (heightAt n.name (n.y1 - n.y0) - (n.y1 - n.y0)) / 2.0)) else Nothing
+  lifts = liftsFrom settled.tops
 
   lift :: String -> Number
   lift name = fromMaybe 0.0 (Map.lookup name lifts)
@@ -472,8 +561,8 @@ laidOut direction metrics widths given projection = case direction of
   sink :: Number
   sink =
     if not active then 0.0
-    else if Array.null chartBoxes then (if Array.null strays then 0.0 else arranged.bottom + 2.0 * metrics.nodeGap)
-    else max 0.0 (arranged.bottom - placed.chart.y1)
+    else if Array.null chartBoxes then (if Array.null strays then 0.0 else settled.bottom + 2.0 * metrics.nodeGap)
+    else max 0.0 (settled.bottom - placed.chart.y1)
 
   shift :: Point -> Point
   shift p = { x: p.x + lead, y: p.y }
@@ -501,7 +590,7 @@ laidOut direction metrics widths given projection = case direction of
         let
           name = nameOf index
         in
-          if Set.member name straySet then Map.lookup name arranged.tops <#> \y ->
+          if Set.member name straySet then Map.lookup name settled.tops <#> \y ->
             { index
             , node
             , box: { x: toNumber (strayLayer name) * pitch + lead, y, width: extent, height: heightAt name metrics.restHeight }
@@ -522,7 +611,7 @@ laidOut direction metrics widths given projection = case direction of
   -- ---- outlines -----------------------------------------------------------------------
   -- across the flow an outline has less room than down it: half a layer's
   -- gap, shared by every outline one in another
-  deepest = foldl (\most frame -> max most (frame.levels + 1)) 1 arranged.frames
+  deepest = foldl (\most frame -> max most (frame.levels + 1)) 1 settled.frames
   across = max 0.0 (min given.outline.padding ((turn - 2.0) / toNumber deepest))
 
   -- top-down, the same room between two layers holds, for each outline one
@@ -543,7 +632,7 @@ laidOut direction metrics widths given projection = case direction of
     Just home -> home.nameOf group
     Nothing -> written
 
-  outlines = arranged.frames <#> \frame ->
+  outlines = settled.frames <#> \frame ->
     let
       within = toNumber (frame.levels + 1)
       -- from the outline to its first layer, and from its last layer to it

@@ -36,10 +36,10 @@ import Hylograph.Flow.Render.Route (Piece(..), Route(..))
 import Hylograph.Flow.Render.Route as Route
 import Hylograph.Flow.Render.Sankey (Metrics, Widths(..), defaultMetrics, sankey, sankeyToward)
 import Hylograph.Flow.Render.Text (breadthOf, defaultLettering, heightOf)
-import Hylograph.Flow.Render.Tree (Pointed(..), plainDecoration)
+import Hylograph.Flow.Render.Tree (Bands(..), Pointed(..), plainDecoration)
 import Test.Render.Fixtures (chain, drawings, expect, expectNone, quantity, sankeyMetrics, scan, subjects, weighted)
 import Test.Render.Groups as Groups
-import Test.Render.Realized (attribute)
+import Test.Render.Realized (attribute, hasClass)
 import Test.Render.Tree (pictureOf, structureFaults)
 
 down :: forall wire. Metrics -> Widths wire -> Engine wire
@@ -280,3 +280,61 @@ suite = do
     Left why, _ -> expect why false
     _, Left why -> expect why false
   expectNone "and the tree with buttons still has the marks the layout placed" (structureFaults pressable oneLaid)
+
+  log "render: top-down, the layers are straightened after room is made"
+  -- how far, in all, the edges into each layer are from straight, each
+  -- weighed by its breadth: along the flow's cross axis, by direction
+  let
+    slantInto :: (Route.Point -> Number) -> Layout Number -> Int -> Number
+    slantInto crossOf laid layer = sum $ laid.edges <#> \e ->
+      case Array.find (\n -> n.node.key == e.edge.to) laid.nodes >>= _.layer of
+        Just found | found == layer -> breadthOfRoute e.route * (crossOf (Route.start e.route) - crossOf (Route.end e.route))
+        _ -> 0.0
+  let layersOf laid = Array.filter (_ > 0) (Array.nub (Array.mapMaybe _.layer laid.nodes))
+  expect "with words, top-down: into every layer after the first, the edges' slants, weighed by breadth, add to nothing"
+    (Array.length (layersOf lettered) == 4 && all (\layer -> abs (slantInto _.x lettered layer) < 1.0e-6) (layersOf lettered))
+  let flatLettered = run (sankey (sankeyMetrics { nodeBreadth = 96.0 }) quantity) worded energy
+  expect "left to right the same picture is as it was before 0.5, its layers not straightened: some layer's edges all slant one way"
+    (Array.any (\layer -> abs (slantInto _.y flatLettered layer) > 1.0) (layersOf flatLettered))
+  expect "and with no words and no groups nothing was moved to make room, so nothing is straightened (the layout is the other stood on end, as held above)"
+    (map _.box.x drawn.nodes == map _.box.y (run (sankey sankeyMetrics quantity) plainPicture energy).nodes)
+  expect "the layers an outline spans move as one: a group across three layers, with words, is lawful and its members keep their places to one another"
+    ( let
+        spanning = { grouping: [ Group (GroupId "Span") "Span, a group" [ item "a", item "d", step "h" ] ], closed: Set.empty }
+        projection = project Both (collapse spanning.grouping spanning.closed Groups.works)
+        picture = plainPicture { groups = Just spanning, words = Just Groups.wordsOf }
+        engine = down sankeyMetrics Groups.quantity
+      in
+        Array.null (faultsOf engine picture projection (run engine picture projection))
+    )
+
+  log "render: a band swept across the flow"
+  expect "the area a ribbon sweeps is its centre line set half its breadth either side, across the flow: flat at both ends"
+    ( let
+        ribbon = Ribbon { from: { x: 10.0, y: 0.0 }, pieces: NonEmptyArray.singleton (Curved { leaving: { x: 10.0, y: 20.0 }, arriving: { x: 30.0, y: 20.0 }, to: { x: 30.0, y: 40.0 } }), breadth: 8.0, ink: Route.Band }
+      in
+        Route.sweptPath { x: 1.0, y: 0.0 } ribbon == "M6,0 C6,20 26,20 26,40 L34,40 C34,20 14,20 14,0 Z"
+          && Route.sweptPath { x: 0.0, y: 1.0 } (Route.transpose ribbon) == "M0,6 C20,6 20,26 40,26 L40,34 C20,34 20,14 0,14 Z"
+          && Route.sweptPath { x: 1.0, y: 0.0 } (Polyline { from: { x: 0.0, y: 0.0 }, through: [], to: { x: 0.0, y: 9.0 }, jumps: [] }) == "M0,0 L0,9"
+    )
+  let sweeping = plainDecoration { bands = Swept }
+  case pictureOf sweeping drawn, pictureOf plainDecoration drawn of
+    Right with, Right without -> do
+      expect "asked for, every band is drawn as the area it sweeps: filled, not stroked, marked flow-swept, along the path the route gives"
+        ( all identity (Array.zipWith (\mark placed -> hasClass "flow-swept" mark && attribute "stroke" mark == Just "none" && attribute "fill" mark /= Just "none" && attribute "d" mark == Just (Route.sweptPath { x: 1.0, y: 0.0 } placed.route)) with.edges drawn.edges)
+            && Array.length with.edges == Array.length drawn.edges
+        )
+      expect "not asked for, a band is a stroked line, as it was" (all (\mark -> not (hasClass "flow-swept" mark) && attribute "fill" mark == Just "none") without.edges)
+    Left why, _ -> expect why false
+    _, Left why -> expect why false
+  let thin = run (down defaultMetrics Plain) plainPicture energy
+  let turned = run (down sankeyMetrics quantity) plainPicture (project Both scan)
+  case pictureOf sweeping thin, pictureOf sweeping turned of
+    Right hairlines, Right cyclic -> do
+      expect "a hairline is a line whatever is asked" (all (\mark -> not (hasClass "flow-swept" mark)) hairlines.edges)
+      expect "a band turned back is stroked, and the bands that run forward beside it are swept"
+        ( all identity (Array.zipWith (\mark placed -> hasClass "flow-swept" mark == (placed.course == Forward)) cyclic.edges turned.edges)
+            && Array.any (\placed -> placed.course == Backward) turned.edges
+        )
+    Left why, _ -> expect why false
+    _, Left why -> expect why false
