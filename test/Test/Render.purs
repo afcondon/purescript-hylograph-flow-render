@@ -27,6 +27,7 @@ import Test.Render.Example as Example
 import Test.Render.Groups as Groups
 import Test.Render.Measures as Measures
 import Test.Render.Tree as Tree
+import Test.Render.Unfold as Unfold
 
 held :: String -> Metrics -> Widths Number -> Projection Number -> Effect Unit
 held name metrics widths p = do
@@ -98,4 +99,5 @@ main = do
   Down.suite
   Measures.suite
   Example.suite
+  Unfold.suite
   log "render: all green"

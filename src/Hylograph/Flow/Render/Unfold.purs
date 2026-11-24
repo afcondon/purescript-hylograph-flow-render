@@ -84,8 +84,16 @@
 -- |   node, as the Sankey engine has it: it stands where its other end's
 -- |   rank puts it, since whether a ribbon is turned back is the cut's.
 -- | - **A node no edge touches** is on the shelf, as ever, unless it is a
--- |   member of an open group: then it is in its group's band, with no
--- |   breadth, since nothing passes through it.
+-- |   member of an open group (then it is in its group's band, with no
+-- |   breadth, since nothing passes through it) or a closed group that
+-- |   nothing crosses into or out of (then it is in the first tier, as
+-- |   broad as the group is).
+-- | - **An open group that spans tiers keeps its whole band in each of
+-- |   them.** So a part of the group over it that stands in one of those
+-- |   tiers stands beside the band, though it may be on one path with what
+-- |   is in the band; the group over it can then need more than its
+-- |   breadth, and opening it is not Nested. The breadth is exact for a
+-- |   group none of whose inner groups, open, spans tiers.
 -- |
 -- | The engine promises `FlowsForward`, `LayersAligned` and `WidthsCarried`
 -- | (a node is *at least* as broad as its broader side), not
@@ -222,7 +230,7 @@ plan metrics widths whole =
   , span
   , block: Map.fromFoldable (Array.mapWithIndex (\index node -> Tuple node.key (blockOf (chainAt index) (rankAt index))) fine.nodes)
   , blockOfGroup: Map.mapMaybeWithKey (\_ chain -> Array.head chain >>= \outer -> _.lo <$> Map.lookup outer span) chains.ofGroup
-  , breadth: Map.mapMaybeWithKey (\group _ -> breadthOf group) span
+  , breadth: breadths
   , levels: chains.levels
   , deepest: foldl (\most chain -> max most (Array.length chain)) 0 (Map.values chains.ofGroup)
   }
@@ -297,18 +305,30 @@ plan metrics widths whole =
         in walk (foldl (flip Set.insert) seen fresh) (tail <> fresh)
   reaches a b = maybe false (Set.member b) (Map.lookup a reached)
 
-  breadthOf :: GroupId -> Maybe Number
-  breadthOf group =
+  -- deepest groups first, so that a group's breadth is known before the
+  -- breadth of the group that holds it
+  breadths :: Map GroupId Number
+  breadths = foldl (\known group -> maybe known (\found -> Map.insert group found known) (breadthOf known group)) Map.empty
+    (map _.group (Array.sortWith (\g -> negate g.depth) ((Map.toUnfoldable chains.ofGroup :: Array (Tuple GroupId (Array GroupId))) <#> \(Tuple group chain) -> { group, depth: Array.length chain })))
+
+  breadthOf :: Map GroupId Number -> GroupId -> Maybe Number
+  breadthOf known group =
     let
       inside index = Array.elem group (chainAt index)
       nodes = Array.filter inside (Array.range 0 (count - 1))
       inner = Array.filter (\r -> inside r.from && inside r.to) routable
       entering = sum (Array.filter (\r -> inside r.to && not (inside r.from)) routable <#> \r -> widthOf widths r.edge)
       leaving = sum (Array.filter (\r -> inside r.from && not (inside r.to)) routable <#> \r -> widthOf widths r.edge)
-      -- a thing abreast: a node, or a ribbon between two of the group's nodes
-      things = (nodes <#> \index -> { first: index, last: index, weight: through index })
-        <> (inner <#> \r -> { first: r.from, last: r.to, weight: widthOf widths r.edge })
-      onOnePath a b = reaches a.last b.first || reaches b.last a.first
+      -- the groups inside this one, each as broad (in units) as it is closed
+      within = Array.nub (nodes >>= \index -> Array.drop 1 (Array.dropWhile (_ /= group) (chainAt index))) # Array.mapMaybe \held ->
+        Map.lookup held known <#> \pixels -> let its = Array.filter (\index -> Array.elem held (chainAt index)) nodes in { firsts: its, lasts: its, weight: pixels / metrics.unit }
+      -- a thing abreast: a node, a ribbon between two of the group's nodes,
+      -- or a group inside it, closed
+      things = (nodes <#> \index -> { firsts: [ index ], lasts: [ index ], weight: through index })
+        <> (inner <#> \r -> { firsts: [ r.from ], lasts: [ r.to ], weight: widthOf widths r.edge })
+        <> within
+      before a b = Array.any (\last -> Array.any (reaches last) b.firsts) a.lasts
+      onOnePath a b = before a b || before b a
       clashes = Array.mapWithIndex (\i a -> Set.fromFoldable (Array.catMaybes (Array.mapWithIndex (\j b -> if i /= j && onOnePath a b then Just j else Nothing) things))) things
       weights = map _.weight things
     in
@@ -382,9 +402,7 @@ laidOut planned direction metrics widths whole given projection = case direction
     , edges: Array.sortWith _.index (forward <> backward)
     , outlines
     , width: lead + trail + foldl max (foldl (\acc n -> max acc n.x1) placed.chart.x1 placed.isolated) (map (\n -> n.box.x - lead + n.box.width) stood)
-    , height:
-        if Array.null boxes then foldl (\acc n -> max acc (n.y1 + sink)) (headroom + footroom) placed.isolated
-        else max (placed.extent.y1 + sink) (bottom + footroom)
+    , height: max (bottom + footroom) (if Array.null boxes then foldl (\acc n -> max acc (n.y1 + sink)) 0.0 placed.isolated else placed.extent.y1 + sink)
     }
 
   closed = maybe Set.empty _.closed given.groups
@@ -431,8 +449,10 @@ laidOut planned direction metrics widths whole given projection = case direction
     TopDown -> metrics.restHeight
   pitch = extent + metrics.layerGap
 
-  -- a member of an open group that no edge touches: in its band, not on the shelf
-  strays = Array.filter (\index -> not (Set.member (nameOf index) mentioned) && not (Array.null (pathAt index))) (Array.range 0 (Array.length names - 1))
+  -- a node no edge touches that is a member of an open group, or is a
+  -- closed group (one that nothing crosses into or out of): in the chart,
+  -- at its place in the order, not on the shelf
+  strays = Array.filter (\index -> not (Set.member (nameOf index) mentioned) && (not (Array.null (pathAt index)) || isJust (keyAt index >>= groupOfKey))) (Array.range 0 (Array.length names - 1))
   straySet = Set.fromFoldable (map nameOf strays)
   forShelf = Array.filter (\name -> not (Set.member name straySet)) names
 
@@ -505,7 +525,7 @@ laidOut planned direction metrics widths whole given projection = case direction
   entries =
     Array.mapMaybe (\n -> Map.lookup n.name numberOf <#> nodeEntry n.layer) placed.nodes
       <> Array.mapMaybe (\n -> laneEntry { name: n.name, layer: n.layer }) placed.waypoints
-      <> map (\index -> (nodeEntry (strayTier index) index) { breadth = 0.0 }) strays
+      <> map (\index -> nodeEntry (strayTier index) index) strays
 
   blocksAt :: Int -> Array Entry -> Array Block
   blocksAt depth within = map _.block (Array.sortWith (keyOrder <<< _.key) (loose <> clusters))
@@ -595,7 +615,9 @@ laidOut planned direction metrics widths whole given projection = case direction
 
   -- how far what is under the chart (channels, shelf) has moved
   sink :: Number
-  sink = if Array.null boxes then 0.0 else bottom + footroom - placed.chart.y1
+  sink =
+    if Array.null boxes then (if Array.null strays then 0.0 else bottom + footroom + 2.0 * metrics.nodeGap)
+    else bottom + footroom - placed.chart.y1
 
   -- ---- the margins along the flow -------------------------------------------------------
   deepest = max 1 planned.deepest
@@ -635,7 +657,7 @@ laidOut planned direction metrics widths whole given projection = case direction
   stood = strays # Array.mapMaybe \index -> Array.index projection.nodes index <#> \node ->
     { index
     , node
-    , box: { x: toNumber (strayTier index) * pitch + lead, y: topOf (nameOf index), width: extent, height: 0.0 }
+    , box: { x: toNumber (strayTier index) * pitch + lead, y: topOf (nameOf index), width: extent, height: breadthAt index }
     , layer: Just (strayTier index)
     , words: Nothing
     , ports: []

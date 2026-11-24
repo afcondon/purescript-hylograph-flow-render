@@ -174,13 +174,11 @@ change one other =
                     }
                 , node
                 , parts
-                , inFirst: here.direction == one.direction && isFirst
+                , inFirst: true
                 }
               ]
         Nothing -> []
       _ -> []
-    where
-    isFirst = Array.length here.nodes == Array.length one.nodes && map (_.node.key) here.nodes == map (_.node.key) one.nodes
 
   pairedOne = barsOf one inOther other []
   pairedOther = barsOf other inOne one []
