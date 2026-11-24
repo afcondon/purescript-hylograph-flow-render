@@ -7,7 +7,7 @@ is a value for pictures of computation: items that hold values, steps that
 compute, wires between them, and `project`, which turns a flow into plain
 nodes and edges. This package draws that projection: a layout of it, by
 whichever layout engine you hand it (its own is a layered layout, left to
-right), and an SVG of that layout as a
+right or, since 0.5, top-down), and an SVG of that layout as a
 [HATS](https://github.com/afcondon/purescript-hylograph-selection) tree.
 It knows nothing about where a flow came from, and the tree knows nothing
 about which engine laid it out.
@@ -235,9 +235,10 @@ each breaking one of the laws 0.4 added.
 | `Hylograph.Flow.Render.Engine` | What any engine makes: `Layout`, `PlacedNode` (with `ports :: Array PlacedPort`), `PlacedEdge` (with `route`), `PlacedOutline`, `Direction`, `Side`, `PortFlow`, `portPoint`. What every engine is told: `Picture` (with `fixed :: Node -> Maybe FixedNode`), `plainPicture`, `FixedNode`, `Groups`, `openPaths`. An engine as a value: `Engine`, `Promise`, `run`; `Scaling` and `scaledBreadth` for `WidthsScaled`. Its header gives the reason for each decision. |
 | `Hylograph.Flow.Render.Columns` | The columns engine (0.4): `columns :: Spacing -> Scaling wire -> Engine wire`, `Spacing`, `defaultSpacing`. Nodes sized by the picture, in a column for each layer; ribbons from port to port at one scale. Promises `FlowsForward`, `LayersAligned`, `KeepsFixed`, `WidthsScaled`; draws no outlines. Its header says why it is an engine of its own and not the Sankey engine taught ports. |
 | `Hylograph.Flow.Render.Route` | `Route = Ribbon … \| Polyline … \| Spline …`, and what is read from one: `start`, `end`, `svgPath`, `flatten`, `length`, `bends`. |
-| `Hylograph.Flow.Render.Sankey` | The Sankey engine: `sankey :: Metrics -> Widths wire -> Engine wire`, with `Metrics`, `Widths`, `defaultMetrics`, `widthOf` as its own configuration. Pure, so it runs anywhere, without a DOM. Its header says how a group's members are kept together and what `hylograph-layout` does not offer for it. |
+| `Hylograph.Flow.Render.Sankey` | The Sankey engine: `sankey :: Metrics -> Widths wire -> Engine wire`, and since 0.5 `sankeyToward :: Direction -> Metrics -> Widths wire -> Engine wire` (top-down), with `Metrics`, `Widths`, `defaultMetrics`, `widthOf` as its own configuration. Pure, so it runs anywhere, without a DOM. Its header says how a group's members are kept together and what `hylograph-layout` does not offer for it. |
 | `Hylograph.Flow.Render.Layout` | 0.2's door: `layout :: Metrics -> Widths wire -> Projection wire -> Layout wire`, and the names 0.2 imported from here, re-exported. |
-| `Hylograph.Flow.Render.Text` | `estimateWidth`, `wrap`, `setWords`, `Lettering`: text set without measuring it. |
+| `Hylograph.Flow.Render.Text` | `estimateWidth`, `wrap`, `setWords`, `Lettering`, `heightOf`, `breadthOf`: text set without measuring it. |
+| `Hylograph.Flow.Render.Keys` | `pressByKeys` (0.5): Enter and Space on a focused button of a drawn flow are a click. The one foreign module; needs a document. |
 | `Hylograph.Flow.Render.Tree` | `tree :: Decoration wire -> Layout wire -> Tree`, of any engine's layout. Items as open boxes, steps as filled lozenges, placed ports as small squares, open groups as outlines; a node whose inside the decoration draws (`inside`), as that. `plainDecoration`, `withOverlay`, `withGroups`, `groupOf`, `keyName`, `groupName`, `strokeOf`. |
 | `Hylograph.Flow.Render.Laws` | `check`, `generalFaults`, `promiseFaults`, `Law` (with `FixedKept` and `Scaled` since 0.4), `broken`; `faultsOf`, `layoutFaultsOf` in words alone; `faults`, `layoutFaults` as in 0.2 (the Sankey engine's). `strangers`: the nodes in an outline that is not theirs (the law is that there are none). |
 | `Hylograph.Flow.Render.Measures` | `scoreOf`, `drawnOf`, and each measure by name: `crossings`, `edgeLength`, `bends`, `extent`, `area`, `aspect`, `nodeOverlaps`, `edgesThroughNodes`, `outlineTrespasses`, `strangersIn`, `unplaced`. |
@@ -249,7 +250,7 @@ svg.flow[data-direction=left-to-right|top-down]
   g.flow-outlines > g.flow-outline[data-group][data-depth]
                       > rect.flow-outline-box, rect.flow-outline-tab, text.flow-outline-label
   g.flow-edges > path.flow-edge.flow-ribbon|.flow-polyline|.flow-spline
-                   .flow-band|.flow-hairline[.flow-backward][data-edge][data-from][data-to]
+                   .flow-band|.flow-hairline[.flow-backward][.flow-swept][data-edge][data-from][data-to]
   g.flow-nodes > g.flow-node.flow-item|.flow-step[.flow-lettered][data-key]
                    > rect.flow-box, rect.flow-swatch?, text.flow-label,
                      text.flow-label-more*, text.flow-detail*, text.flow-note?,
@@ -258,6 +259,92 @@ svg.flow[data-direction=left-to-right|top-down]
                    > g.flow-inside[transform] > (the caller's),
                      rect.flow-port.flow-port-in|.flow-port-out[data-port]*
 ```
+
+## Changes in 0.5.0
+
+Not published. Made for a page that draws two Sankey diagrams side by
+side, each running down into a stack of counted symbols
+(`sverdrup-cars`, the thinned page); everything here was wanted by that
+page and is held by this package's own tests.
+
+Added:
+
+- **The Sankey engine top-down**: `sankeyToward :: Direction -> Metrics ->
+  Widths wire -> Engine wire`, and `sankey = sankeyToward LeftToRight`.
+  Top-down the layers are rows, a node is as broad as the broader of what
+  enters and leaves it, and every edge not turned back runs down the page.
+  The layout is the left-to-right one stood on end (the same placing,
+  order, lanes and channels), and it promises the same three laws, which
+  `Laws` reads by the layout's direction. Four things are done otherwise
+  top-down, and `Sankey`'s header says each exactly:
+  - a node's **words** make it broader, not taller: they are wrapped to
+    `nodeBreadth` and the node is as broad as its ribbons or as its widest
+    line needs (`Text.breadthOf`), so a thin ribbon under a long name has a
+    node as broad as the name and two names cannot collide;
+  - every node is **as tall as the tallest words** of any (`restHeight`
+    where the picture sets none), so a layer is one row;
+  - an outline's **strip** is before its first row, in the gap between
+    layers, and where the gap has not room the strip and the padding are
+    less in proportion (`PlacedOutline.header` says what the strip is);
+  - the **margins** are only what is used: none for a picture of forward
+    edges with no outline, which begins at its first row and ends at its
+    last, so a page can stand something directly under it.
+- **Top-down, the layers are straightened** after room is made. Making
+  room for words and outlines moves boxes one way only, after the Sankey
+  layout has placed each layer against its neighbours; a row of thin
+  ribbons under long names was left spread out over a next row that had
+  not moved, every ribbon slanting the same way. Each layer is now moved
+  once more, whole, by the breadth-weighed mean of how far its edges from
+  earlier layers are from straight (the layers an outline spans move as
+  one). Left to right this is not done, so that no picture made before 0.5
+  moves.
+- **`Laws`**: `Conservation` reads what a node's words need across the flow
+  by direction (their height left to right, their breadth top-down). No
+  new law and no new promise: a downward Sankey is held to the laws a
+  Sankey is held to.
+- **`Route.transpose`** (a route with x for y at every point) and
+  **`Route.sweptPath`** (a ribbon as the outline of the area it sweeps
+  across the flow).
+- **`Decoration.bands :: Bands`** (`Stroked`, the default, or `Swept`). A
+  band was always one path stroked as broad as the ribbon. A stroke is
+  broad across the line, not across the flow: a ribbon 200 pixels broad
+  that shifts 150 across in a run of 90 is too thin in the middle and
+  bulges past both nodes at its ends. `Swept` draws a band that runs
+  forward as the filled area its span on its source sweeps to its span on
+  its target: flat on both nodes, its breadth across the flow all the way.
+  Its mark has the class `flow-swept`, a `fill` and no stroke, so a
+  stylesheet that colours ribbons by `stroke` must colour these by `fill`.
+  A band turned back, and a ribbon of 3 pixels or less, are stroked either
+  way.
+- **The keyboard**: `Decoration.button :: Pointed -> Maybe String` makes a
+  mark focusable and a button for a screen reader, with the name given;
+  `Hylograph.Flow.Render.Keys.pressByKeys` (the package's one foreign
+  module) makes Enter and Space on a focused button a click, told as any
+  click is. HATS has behaviours for clicks and the pointer and none for a
+  key, which is why the second half is a listener on a container and not a
+  behaviour on the mark.
+
+What was asked for and is not here: **a group opened in place, with the
+rest of the picture keeping its place.** `collapse` gives the contracted
+flow and the open one, and an open group is outlined; but each is laid
+out afresh, and nothing holds what is outside the group where it stood
+(the open row is wider, and the Sankey relaxation places every layer
+again). On the flows this was made for the *order* across the flow was
+the same open and closed in every case tested; that is an observation of
+those flows and not a promise of the engine. Keeping places would mean
+laying out the open flow first and drawing the contracted one in the
+places it leaves, which no engine here does.
+
+Breaking, against 0.4.0:
+
+- **`Decoration` has the fields `button` and `bands`.** Code that builds
+  one from `plainDecoration` with a record update is unaffected; code that
+  writes one out as a whole record must add `button: const Nothing` and
+  `bands: Stroked`.
+- **Top-down only**: nothing made a top-down Sankey before, so nothing
+  moves. Every left-to-right layout is, to the number, what 0.4.0 made
+  (`sankeyToward LeftToRight` against `sankey` on every made flow is in
+  the suite; the left-to-right suites are unchanged and pass).
 
 ## Changes in 0.4.0
 
@@ -398,7 +485,13 @@ exactly the law it was made to break. It holds the columns engine (0.4)
 to the general laws and its four promises on the same flows, with no node
 fixed and with every node fixed; to widths and ports worked out by hand;
 and makes two wrong columns engines, each breaking one of `FixedKept` and
-`Scaled` and nothing else. It holds the measures and the
+`Scaled` and nothing else. It holds the Sankey engine top-down (0.5,
+`Test.Render.Down`) to the same general laws and promises on every one
+of those flows and groupings again, and then to what top-down means:
+that it is the left-to-right layout stood on end where nothing asks for
+more, its margins, its words, its outline's strip, its layers
+straightened; and a top-down layout spoiled in one way fails the law
+that way is against. It holds the measures and the
 routes to figures worked out by hand (two edges that cross count one
 crossing; an L has one bend and its two legs' length; a route's SVG path
 is the string written down). And it reads the HATS tree back, checking
