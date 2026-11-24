@@ -195,6 +195,10 @@ suite = do
   expect "a group's two parts are two shades of the first hue, the darker first; the loose source is the second hue; the sink, which gives nothing, is left in the ink"
     (nodeColour "coal" == (shade (-0.3) <$> Array.index palette 0) && nodeColour "gas" == (shade 0.45 <$> Array.index palette 0) && nodeColour "wind" == Array.index palette 1 && nodeColour "grid" == Nothing)
   expect "a ribbon takes the colour of where it comes from" (edgeColours == map nodeColour [ "coal", "gas", "wind" ])
+  expect "and one of three tints of it by where it goes, so that two ribbons of one source can be told apart: to the fourth in the order as it is, to the second a little lighter, to the third a little darker"
+    ( (Array.head tinted.edges <#> \e -> [ (dressed.edge e { to = StepKey (StepId "gas") }).colour, (dressed.edge e { to = StepKey (StepId "wind") }).colour ])
+        == Just [ shade 0.28 <$> nodeColour "coal", shade (-0.22) <$> nodeColour "coal" ]
+    )
   expect "the closed group's bar is the group's hue itself"
     ((dressed.node { key: StepKey (GroupStep (GroupId "Fossil")), label: "Fossil", inputs: [], outputs: [] }).colour == Array.index palette 0)
 

@@ -113,7 +113,8 @@ shade by colour = case channels of
 -- | group's parts keep the group's hue in shades, from darker to lighter
 -- | in the order given, so that two parts of one group can be told apart
 -- | and are still seen to be of one group; a closed group's bar is the
--- | group's hue itself. A ribbon takes the colour of where it comes from.
+-- | group's hue itself. A ribbon takes the colour of where it comes from,
+-- | in one of three tints by where it goes (see `tinted` below).
 -- | So a ribbon keeps its hue whatever is open, and an overlap is grey on
 -- | grey only where two blocks share a hue (more than five give) or two
 -- | ribbons leave one node.
@@ -125,10 +126,26 @@ shade by colour = case channels of
 coloured :: forall wire. Array Grouping -> Projection wire -> Decoration wire -> Decoration wire
 coloured grouping finest decoration = decoration
   { node = \node -> let mark = decoration.node node in mark { colour = of' node.key <|> mark.colour }
-  , edge = \edge -> let line = decoration.edge edge in line { colour = of' edge.from <|> line.colour }
+  , edge = \edge -> let line = decoration.edge edge in line { colour = (tinted edge.to <$> of' edge.from) <|> line.colour }
   }
   where
   over = groupsOver grouping
+  -- Two ribbons that leave one node have one colour by the rule above, and
+  -- they do cross one another (a long ribbon and a short one from one
+  -- source). So a ribbon is its source's colour in one of three tints, by
+  -- where it goes: as it is, a little lighter, a little darker, by the
+  -- place of its far end in the order given. The hue is the source's
+  -- still; two ribbons of one source to two ends are told apart unless
+  -- their ends are three places apart.
+  tinted to colour = case placeOf to `mod` 3 of
+    1 -> shade 0.28 colour
+    2 -> shade (-0.22) colour
+    _ -> colour
+  placeOf key = fromMaybe 0 case key of
+    StepKey (GroupStep group) -> firstIn group
+    ItemKey (GroupItem group) -> firstIn group
+    _ -> Array.findIndex (\node -> node.key == key) finest.nodes
+  firstIn group = Array.findIndex (\node -> Array.elem group (over node.key)) finest.nodes
   gives = foldl (\known edge -> Map.insert edge.from true known) Map.empty finest.edges
   -- the top-level block of an element: its outermost group, or itself
   blockOf key = case Array.head (over key) of
