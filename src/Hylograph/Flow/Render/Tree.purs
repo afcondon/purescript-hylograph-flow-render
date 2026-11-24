@@ -80,6 +80,7 @@ module Hylograph.Flow.Render.Tree
   , Gesture(..)
   , Pointed(..)
   , Bands(..)
+  , Labels(..)
   , Decoration
   , plainDecoration
   , withOverlay
@@ -93,6 +94,7 @@ module Hylograph.Flow.Render.Tree
   , directionName
   , portSide
   , tree
+  , treeLabelled
   ) where
 
 import Prelude
@@ -166,6 +168,22 @@ instance Show Pointed where
 data Bands = Stroked | Swept
 
 derive instance Eq Bands
+
+-- | Where a node's label is written (0.6; `treeLabelled`).
+-- |
+-- | - `Within`: in its box, as since 0.1.
+-- | - `Beside least`: beside its box, for a node that is a thin bar and as
+-- |   broad as its ribbons, no more (the unfolding engine's): after it
+-- |   along the flow where the picture has room and before it where it has
+-- |   not, left to right; over it, or under it in the first row, top-down.
+-- |   In the ink's colour, since it is on the paper. A node less than
+-- |   `least` pixels across the flow has no label drawn (its mark has the
+-- |   class `flow-unlabelled`): labels beside bars that touch would run
+-- |   into one another. And a step is then a bar with square corners, so
+-- |   that parts that stand with no gap between them tile.
+data Labels = Within | Beside Number
+
+derive instance Eq Labels
 
 -- | `inside` (0.4): a node's inside, drawn by the caller in the node's own
 -- | coordinates, for the nodes it draws; see the module's header.
@@ -285,7 +303,13 @@ portSide :: Number
 portSide = 5.0
 
 tree :: forall wire. Decoration wire -> Layout wire -> Tree
-tree decoration laid =
+tree = treeLabelled Within
+
+-- | The tree with each node's label written where it is told (0.6):
+-- | `tree` is `treeLabelled Within`. (Not a field of `Decoration`, so that
+-- | no decoration written out whole before 0.6 has to change.)
+treeLabelled :: forall wire. Labels -> Decoration wire -> Layout wire -> Tree
+treeLabelled labels decoration laid =
   elem SVG
     [ staticStr "class" "flow"
     , staticStr "data-direction" (directionName laid.direction)
@@ -452,7 +476,42 @@ tree decoration laid =
       -- tree is not told another lettering)
       titleLine = lineHeight defaultLettering defaultLettering.titleSize
       detailLine = lineHeight defaultLettering defaultLettering.detailSize
+      besideLeast = case labels of
+        Beside least -> Just least
+        Within -> Nothing
+      acrossFlow = case laid.direction of
+        LeftToRight -> n.box.height
+        TopDown -> n.box.width
+      unlabelled = case besideLeast of
+        Just least -> acrossFlow < least
+        Nothing -> false
+      -- a label beside its bar, on the paper
+      besideLabel =
+        let
+          long = heavier * estimateWidth 12.0 mark.label
+          plain className anchor x y = elem Text
+            [ staticStr "class" className
+            , Friendly.x x
+            , Friendly.y y
+            , Friendly.textAnchor anchor
+            , staticStr "dominant-baseline" "central"
+            , Friendly.fontSize "12"
+            , Friendly.fontWeight "600"
+            , Friendly.fill ink
+            , staticStr "pointer-events" "none"
+            , staticStr "textContent" mark.label
+            ]
+            []
+        in
+          case laid.direction of
+            LeftToRight ->
+              if n.box.x + n.box.width + 6.0 + long <= laid.width then plain "flow-label flow-label-beside" "start" (n.box.x + n.box.width + 6.0) middle
+              else plain "flow-label flow-label-beside" "end" (n.box.x - 6.0) middle
+            TopDown ->
+              if n.box.y >= 16.0 then plain "flow-label flow-label-beside" "middle" (n.box.x + n.box.width / 2.0) (n.box.y - 8.0)
+              else plain "flow-label flow-label-beside" "middle" (n.box.x + n.box.width / 2.0) (n.box.y + n.box.height + 9.0)
       written = case n.words of
+        Nothing | isJust besideLeast -> { lines: if unlabelled then [] else [ besideLabel ], first: middle }
         Nothing -> { lines: [ text "flow-label" setting.anchor (setting.x 13.0) middle "12" "600" mark.label ], first: middle }
         Just set ->
           let
@@ -477,7 +536,7 @@ tree decoration laid =
             , Friendly.strokeWidth 1.25
             , Friendly.fill (if isStep then fromMaybe ink mark.colour else paper)
             ]
-              <> (if isStep then [ staticStr "rx" (show (min 13.0 (n.box.height / 2.0))) ] else [])
+              <> (if isStep && not (isJust besideLeast) then [ staticStr "rx" (show (min 13.0 (n.box.height / 2.0))) ] else [])
           )
           []
       swatch = case mark.colour of
@@ -510,7 +569,7 @@ tree decoration laid =
     in
       withBehaviors (gestures (PointedElement n.node.key)) $
         elem Group
-          ( [ staticStr "class" (classes [ "flow-node", if isStep then "flow-step" else "flow-item", if isJust n.words then "flow-lettered" else "", drawn.drawnClass, mark.className ])
+          ( [ staticStr "class" (classes [ "flow-node", if isStep then "flow-step" else "flow-item", if isJust n.words then "flow-lettered" else "", if unlabelled then "flow-unlabelled" else "", drawn.drawnClass, mark.className ])
             , staticStr "data-key" (keyName n.node.key)
             ]
               <> buttonOf (PointedElement n.node.key)

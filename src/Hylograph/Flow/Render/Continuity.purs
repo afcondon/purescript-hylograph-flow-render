@@ -43,6 +43,8 @@ module Hylograph.Flow.Render.Continuity
   ( Continuity(..)
   , Bar
   , Change
+  , Opened
+  , opened
   , change
   , continuity
   ) where
@@ -106,6 +108,49 @@ groupOfKey = case _ of
 close :: Number
 close = 1.0e-6
 
+-- | A closed group's bar in one layout, and its parts in another.
+type Opened = { group :: GroupId, bar :: PlacedNode, parts :: Array PlacedNode, measured :: Bar }
+
+-- | The bars of the first layout that the second has not, each with its
+-- | parts in the second: the members there of its group's outline. (A bar
+-- | whose group has no outline in the second layout is not among them.)
+opened :: forall wire. Layout wire -> Layout wire -> Array Opened
+opened here there = do
+  node <- here.nodes
+  case groupOfKey node.node.key of
+    Just group | not (Array.any (\n -> n.node.key == node.node.key) there.nodes) -> case Array.find (\outline -> outline.group == group) there.outlines of
+      Just outline ->
+        let
+          parts = Array.mapMaybe (\index -> Array.find (\n -> n.index == index) there.nodes) outline.members
+          tiers = Array.nub (map _.layer parts)
+          first = foldl (\least part -> min least (start part.box)) (1.0 / 0.0) parts
+          last = foldl (\most part -> max most (start part.box + breadth part.box)) (-1.0 / 0.0) parts
+        in
+          if Array.null parts then []
+          else
+            [ { group
+              , bar: node
+              , parts
+              , measured:
+                  { group
+                  , breadth: breadth node.box
+                  , slot: last - first
+                  , abreast: foldl (\most tier -> max most (sum (map (breadth <<< _.box) (Array.filter (\part -> part.layer == tier) parts)))) 0.0 tiers
+                  , parts: Array.length parts
+                  , inPlace: first >= start node.box - close && last <= start node.box + breadth node.box + close
+                  }
+              }
+            ]
+      Nothing -> []
+    _ -> []
+  where
+  start box = case here.direction of
+    LeftToRight -> box.y
+    TopDown -> box.x
+  breadth box = case here.direction of
+    LeftToRight -> box.height
+    TopDown -> box.width
+
 -- | What is kept between two layouts, and what is not.
 change :: forall wire. Layout wire -> Layout wire -> Change
 change one other =
@@ -149,40 +194,9 @@ change one other =
   moved = untouched # Array.mapMaybe \n -> Map.lookup n.node.key inOther >>= \m -> if sameBox n.box m.box then Nothing else Just n.node.key
 
   -- ---- bars and their parts -----------------------------------------------------
-  -- the bars of `here` that are not in `there`, each with its parts there
-  barsOf :: Layout wire -> Map ElementKey PlacedNode -> Layout wire -> Array { bar :: Bar, node :: PlacedNode, parts :: Array PlacedNode, inFirst :: Boolean } -> Array { bar :: Bar, node :: PlacedNode, parts :: Array PlacedNode, inFirst :: Boolean }
-  barsOf here inThere there found = found <> do
-    node <- here.nodes
-    case groupOfKey node.node.key of
-      Just group | not (Map.member node.node.key inThere) -> case Array.find (\outline -> outline.group == group) there.outlines of
-        Just outline ->
-          let
-            parts = Array.mapMaybe (\index -> Array.find (\n -> n.index == index) there.nodes) outline.members
-            tiers = Array.nub (map _.layer parts)
-            first = foldl (\least part -> min least (start part.box)) (start node.box + breadth node.box) parts
-            last = foldl (\most part -> max most (start part.box + breadth part.box)) (start node.box) parts
-          in
-            if Array.null parts then []
-            else
-              [ { bar:
-                    { group
-                    , breadth: breadth node.box
-                    , slot: foldl (\most part -> max most (start part.box + breadth part.box)) (-1.0 / 0.0) parts - foldl (\least part -> min least (start part.box)) (1.0 / 0.0) parts
-                    , abreast: foldl (\most tier -> max most (sum (map (breadth <<< _.box) (Array.filter (\part -> part.layer == tier) parts)))) 0.0 tiers
-                    , parts: Array.length parts
-                    , inPlace: first >= start node.box - close && last <= start node.box + breadth node.box + close
-                    }
-                , node
-                , parts
-                , inFirst: true
-                }
-              ]
-        Nothing -> []
-      _ -> []
-
-  pairedOne = barsOf one inOther other []
-  pairedOther = barsOf other inOne one []
-  paired = (pairedOne <#> _ { inFirst = true }) <> (pairedOther <#> _ { inFirst = false })
+  pairedOne = opened one other <#> \found -> { bar: found.measured, node: found.bar, parts: found.parts, inFirst: true }
+  pairedOther = opened other one <#> \found -> { bar: found.measured, node: found.bar, parts: found.parts, inFirst: false }
+  paired = pairedOne <> pairedOther
 
   -- every node in one layout only is a bar with parts, or a part of a bar
   explained = Set.fromFoldable (paired >>= \found -> [ found.node.node.key ] <> map _.node.key found.parts)

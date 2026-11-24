@@ -79,7 +79,7 @@
 -- |   group's breadth) and nothing else: breadth is data. The engine sets
 -- |   no words, so under a picture that gives words it breaks the general
 -- |   law `Lettered`; give it none, and let the tree write each label
--- |   beside its node (`Decoration.labels = Beside`).
+-- |   beside its node (`Tree.treeLabelled (Beside least)`).
 -- | - **A ribbon turned back does not stand below the others** on its
 -- |   node, as the Sankey engine has it: it stands where its other end's
 -- |   rank puts it, since whether a ribbon is turned back is the cut's.

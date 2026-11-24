@@ -7,7 +7,8 @@ module Test.Render.Unfold (suite, tally) where
 import Prelude
 
 import Data.Array as Array
-import Data.Foldable (all, foldl, for_)
+import Data.Foldable (all, foldl, for_, sum)
+import Data.Int (toNumber)
 import Data.Maybe (Maybe(..), isJust)
 import Data.Set as Set
 import Effect (Effect)
@@ -15,9 +16,14 @@ import Effect.Console (log)
 import Hylograph.Flow (Drawing(..), ElementKey(..), GroupId, StepId(..), project)
 import Hylograph.Flow.Grouping (collapse)
 import Hylograph.Flow.Render.Continuity (Continuity(..), change, continuity)
-import Hylograph.Flow.Render.Engine (Course(..), Direction(..), Layout, PlacedOutline, plainPicture, run)
-import Hylograph.Flow.Render.Laws (check)
-import Hylograph.Flow.Render.Sankey (Metrics, sankeyToward)
+import Hylograph.Flow.Render.Engine (Course(..), Direction(..), Layout, PlacedOutline, Promise(..), plainPicture, run)
+import Hylograph.Flow.Render.Laws (Law(..), check, generalFaults, promiseFaults)
+import Hylograph.Flow.Render.Present (present, quietKeys)
+import Hylograph.Flow.Render.Reshape (sameShape)
+import Hylograph.Flow.Render.Route (Route(..))
+import Hylograph.Flow.Render.Transition (frame, stages)
+import Hylograph.Transition.Easing (EasingType(..))
+import Hylograph.Flow.Render.Sankey (Metrics, sankeyToward, widthOf)
 import Hylograph.Flow.Render.Unfold (unfolding)
 import Test.Render.Fixtures (expect, expectNone, sankeyMetrics)
 import Test.Render.Generated (Made, cutsOf, made, pairsOf, quantity)
@@ -141,6 +147,104 @@ tally direction = foldl add { flows: 0, cuts: 0, pairs: 0, held: 0, nested: 0, o
       , faults: acc.faults <> lawFaults <> Array.concatMap _.words pairs
       }
 
+-- | Every pair of the first twenty made flows watched: its stages, and ten
+-- | pictures through them, each held to the law that widths are carried
+-- | and that every route meets its nodes.
+watching :: Direction -> { pairs :: Int, staged :: Int, stages :: Int, pictures :: Int, misshapen :: Int, heldStaged :: Int, ends :: Int, faults :: Array String }
+watching direction = foldl add { pairs: 0, staged: 0, stages: 0, pictures: 0, misshapen: 0, heldStaged: 0, ends: 0, faults: [] } (Array.take 20 seeds)
+  where
+  carried = WidthsCarried { pixelsPerUnit: metrics.unit, unitsOf: widthOf quantity }
+  add acc seed =
+    let
+      subject = made seed
+      projectionOf closed = project Steps (collapse subject.grouping closed subject.flow)
+      pictureOf closed = plainPicture { groups = Just { grouping: subject.grouping, closed } }
+      setting = settingOf direction subject
+      found = pairsOf subject.grouping >>= \pair -> [ { pair, opening: true }, { pair, opening: false } ] <#> \way ->
+        let
+          shut = setting.layoutOf way.pair.shut
+          open = setting.layoutOf way.pair.open
+          before = if way.opening then shut else open
+          after = if way.opening then open else shut
+          staged = stages before after
+          cutOf laid = if map _.node.key laid.nodes == map _.node.key shut.nodes then way.pair.shut else way.pair.open
+          pictures = Array.range 0 10 # Array.mapMaybe \step -> frame QuadInOut staged (toNumber step / 10.0)
+          wrong = pictures >>= \picture ->
+            map _.words (promiseFaults carried (pictureOf (cutOf picture)) (projectionOf (cutOf picture)) picture)
+              <> map _.words (Array.filter (\fault -> fault.law == Routed || fault.law == Placed || fault.law == Finite) (generalFaults (pictureOf (cutOf picture)) (projectionOf (cutOf picture)) picture))
+        in
+          { staged: not (Array.null staged)
+          , stages: Array.length staged
+          , pictures: Array.length pictures
+          , misshapen: Array.length (Array.filter (\stage -> not (sameShape stage.from stage.to)) staged)
+          , heldStaged: continuity before after == Held && Array.any (\stage -> stage.name == "make room" || stage.name == "close up") staged
+          , ends:
+              let
+                boxes laid = map _.box laid.nodes
+                -- each stage has a layout an engine made at one end: the
+                -- shut one where room is made or closed up, the open one
+                -- where the group unfolds or folds
+                true' stage = case stage.name of
+                  "make room" -> boxes stage.from == boxes shut
+                  "unfold" -> boxes stage.to == boxes open
+                  "fold" -> boxes stage.from == boxes open
+                  "close up" -> boxes stage.to == boxes shut
+                  _ -> false
+              in
+                Array.length (Array.filter (not <<< true') staged)
+          , faults: map (\words -> "seed " <> show seed <> ", " <> show way.pair.group <> (if way.opening then " opening" else " closing") <> ": " <> words) wrong
+          }
+    in
+      { pairs: acc.pairs + Array.length found
+      , staged: acc.staged + Array.length (Array.filter _.staged found)
+      , stages: acc.stages + sum (map _.stages found)
+      , pictures: acc.pictures + sum (map _.pictures found)
+      , misshapen: acc.misshapen + sum (map _.misshapen found)
+      , heldStaged: acc.heldStaged + Array.length (Array.filter _.heldStaged found)
+      , ends: acc.ends + sum (map _.ends found)
+      , faults: acc.faults <> Array.concatMap _.faults found
+      }
+
+-- | Present mode on every made flow: the layout with nothing closed, and
+-- | each cut's closed groups drawn quiet.
+presenting :: Direction -> { cuts :: Int, quietNodes :: Int, narrowed :: Int, shortened :: Int, faults :: Array String }
+presenting direction = foldl add { cuts: 0, quietNodes: 0, narrowed: 0, shortened: 0, faults: [] } (Array.take 20 seeds)
+  where
+  carried = WidthsCarried { pixelsPerUnit: metrics.unit, unitsOf: widthOf quantity }
+  breadth box = case direction of
+    LeftToRight -> box.height
+    TopDown -> box.width
+  long box = case direction of
+    LeftToRight -> box.width
+    TopDown -> box.height
+  breadthOf route = case route of
+    Ribbon ribbon -> ribbon.breadth
+    _ -> 0.0
+  add acc seed =
+    let
+      subject = made seed
+      open = (settingOf direction subject).layoutOf Set.empty
+      projection = project Steps (collapse subject.grouping Set.empty subject.flow)
+      picture = plainPicture { groups = Just { grouping: subject.grouping, closed: Set.empty } }
+      found = cutsOf subject.grouping <#> \cut ->
+        let
+          quiet = present 0.4 cut open
+          keys = quietKeys cut open
+        in
+          { quietNodes: Set.size keys
+          , narrowed: Array.length (Array.filter identity (Array.zipWith (\a b -> breadth a.box /= breadth b.box) open.nodes quiet.nodes))
+              + Array.length (Array.filter identity (Array.zipWith (\a b -> breadthOf a.route /= breadthOf b.route) open.edges quiet.edges))
+          , shortened: Array.length (Array.filter identity (Array.zipWith (\a b -> long b.box < long a.box) open.nodes quiet.nodes))
+          , faults: map (\fault -> "seed " <> show seed <> ": " <> fault.words) (promiseFaults carried picture projection quiet <> Array.filter (\fault -> fault.law == Routed) (generalFaults picture projection quiet))
+          }
+    in
+      { cuts: acc.cuts + Array.length found
+      , quietNodes: acc.quietNodes + sum (map _.quietNodes found)
+      , narrowed: acc.narrowed + sum (map _.narrowed found)
+      , shortened: acc.shortened + sum (map _.shortened found)
+      , faults: acc.faults <> Array.concatMap _.faults found
+      }
+
 suite :: Effect Unit
 suite = do
   log "render: the unfolding engine, and what its layouts keep between cuts"
@@ -156,3 +260,17 @@ suite = do
     log ("    the open layout with two nodes of a tier made to change places: " <> show found.spoiled <> " pairs so spoiled, " <> show found.spoiledCaught <> " of them Rearranged")
     expect (show direction <> ": a layout that reorders fails the law: every pair so spoiled is Rearranged") (found.spoiled > 0 && found.spoiledCaught == found.spoiled)
     expect (show direction <> ": all the rungs occur among the pairs") (found.held > 0 && found.nested > 0 && found.ordered > 0)
+
+  log "render: a change of cut watched, and Present mode"
+  for_ [ LeftToRight, TopDown ] \direction -> do
+    let seen = watching direction
+    log ("  " <> show direction <> ": " <> show seen.pairs <> " changes (each pair opened and closed), " <> show seen.staged <> " with something to watch, " <> show seen.stages <> " stages, " <> show seen.pictures <> " pictures sampled at eleven points through each")
+    expectNone (show direction <> ": every sampled picture carries its widths (each ribbon as broad as its quantity, inside its node, beside the others) and every route meets its nodes") (Array.take 8 seen.faults)
+    expect (show direction <> ": every stage is two layouts of one shape") (seen.misshapen == 0)
+    expect (show direction <> ": every stage has at one end a layout the engine made, to the number: the shut one where room is made or closed up, the open one where the group unfolds or folds") (seen.ends == 0)
+    expect (show direction <> ": a pair that is Held has no stage that makes room or closes it up: only the group's own parts move") (seen.heldStaged == 0)
+    let quiet = presenting direction
+    log ("  " <> show direction <> ": Present mode on " <> show quiet.cuts <> " cuts: " <> show quiet.quietNodes <> " quiet nodes, " <> show quiet.shortened <> " shortened along the flow")
+    expect (show direction <> ": Present mode never narrows a node or a ribbon: every breadth is what it is with nothing quiet") (quiet.narrowed == 0)
+    expect (show direction <> ": and it shortens exactly the quiet nodes") (quiet.shortened == quiet.quietNodes && quiet.quietNodes > 0)
+    expectNone (show direction <> ": a quiet layout still carries its widths, and every route meets its nodes") (Array.take 8 quiet.faults)
