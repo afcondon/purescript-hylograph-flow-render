@@ -42,6 +42,17 @@
 -- | `TransitionSpec` of layouts (its engine's, with its easings), whose
 -- | tick is pure; `watch` runs one on its `Coordinator`, drawing each
 -- | value. Nothing here keeps time of its own.
+-- |
+-- | `watch` is the one thing here that the ecosystem already has, and it
+-- | is here because that one cannot be had: a consumer that ticks a
+-- | transition and hands on its value is `transitionConsumer`, in
+-- | `hylograph-simulation` (`Hylograph.Transition.Consumers`), whose
+-- | package also holds the force simulation and so needs `d3-force`,
+-- | `d3-selection` and `d3-drag` to be bundled. A page that draws a flow
+-- | has no D3 and wants none. `watch` is those ten lines over the same
+-- | `Engine` and `Coordinator`, and should go when `transitionConsumer`
+-- | lives in `hylograph-transitions`, which it depends on nothing else to
+-- | do.
 module Hylograph.Flow.Render.Transition
   ( Stage
   , stages
