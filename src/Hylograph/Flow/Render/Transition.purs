@@ -8,8 +8,7 @@
 -- |
 -- | 1. **make room**: the closed picture, with every node the change does
 -- |    not touch going to where the open picture has it, and the group's
--- |    bar going, whole, to where its parts will stand across the flow
--- |    (nowhere, where they will stand within the span it has);
+-- |    bar going, whole, to where its parts will stand across the flow;
 -- | 2. **unfold**: the open picture, with the group's parts starting inside
 -- |    the bar (each where it will be across the flow, all where the bar is
 -- |    along it) and going out along the flow to their tiers.
@@ -122,9 +121,7 @@ unfolding shut open =
 
   -- each bar where it will be when room is made: where its parts begin
   -- across the flow, and where it was along it
-  -- (a bar whose parts will be within the span it has stays where it is)
-  barBoxes = Map.fromFoldable $ bars <#> \found -> Tuple found.bar.node.key
-    (if found.measured.inPlace then found.bar.box else across (foldl (\least part -> min least (start part.box)) (1.0 / 0.0) found.parts) found.bar.box)
+  barBoxes = Map.fromFoldable (bars <#> \found -> Tuple found.bar.node.key (across (foldl (\least part -> min least (start part.box)) (1.0 / 0.0) found.parts) found.bar.box))
 
   -- each part, and each outline of an opened group or of a group in one,
   -- with the bar it comes out of
