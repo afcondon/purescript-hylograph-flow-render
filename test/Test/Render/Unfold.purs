@@ -40,7 +40,7 @@ settingOf :: Direction -> Made -> { layoutOf :: Cut -> Layout (Array Number), fa
 settingOf direction subject =
   let
     projectionOf closed = project Steps (collapse subject.grouping closed subject.flow)
-    engine = unfolding direction metrics quantity { grouping: subject.grouping, finest: projectionOf Set.empty }
+    engine = unfolding direction metrics quantity { grouping: subject.grouping, finest: projectionOf Set.empty, strip: 12.0 }
     pictureOf closed = plainPicture { groups = Just { grouping: subject.grouping, closed } }
   in
     { layoutOf: \closed -> run engine (pictureOf closed) (projectionOf closed)

@@ -44,10 +44,17 @@
 -- | **3. One rule for gaps.** `nodeGap` stands between two boxes of a tier
 -- | that are in different top-level blocks of the grouping (a top-level
 -- | group, open or closed, or a node no group holds), and nothing stands
--- | between two boxes of one block. Two lanes are of one block when their
--- | sources are in one top-level block and their targets in one. No gap
--- | depends on the cut, and an outline takes no room: its name's strip is
--- | in the gap that is there anyway.
+-- | between two boxes of one block, but this: **every group has a strip
+-- | for its name before it across the flow, closed or open** (`Whole.strip`;
+-- | left to right only, where a name is written across the flow). Closed,
+-- | the strip is bare paper over the bar; open, it is the top of the
+-- | outline, with the name in it. So a group inside a group has a place
+-- | for its name that is its own, and since the strip is there either way
+-- | no gap depends on the cut. Two lanes are of one block when their
+-- | sources are in one top-level block and their targets in one. Top-down
+-- | a name is written along the flow, before the group's first row, in the
+-- | gap between tiers, one row of names for each depth, and there is no
+-- | strip across it.
 -- |
 -- | The placing is then a packing with no relaxation in it. The tiers are
 -- | the Sankey layout's of the cut's own flow (its layers, its lanes for
@@ -143,12 +150,15 @@ import Hylograph.Flow.Render.Sankey (Metrics, Widths(..), stoodOnEnd, widthOf)
 -- | under the same grouping and drawing, with some groups closed, and the
 -- | picture must say which (`Picture.groups`; a picture that tells of no
 -- | groups is taken to have none closed, and gets no outlines).
-type Whole wire = { grouping :: Array Grouping, finest :: Projection wire }
+-- | `strip`: the room for a group's name, across the flow, before every
+-- | group (left to right; the picture's `outline.header` is not used).
+type Whole wire = { grouping :: Array Grouping, finest :: Projection wire, strip :: Number }
 
 -- | What no cut changes. `rank`: each node of the finest flow, its place in
 -- | the one order. `span`: each group that holds a node, its first and last
 -- | rank. `block`: each node's and each group's top-level block, as the
--- | first rank of it. `breadth`: each group's breadth, in pixels.
+-- | first rank of it. `breadth`: each group's breadth, in pixels, its own
+-- | strip aside. `strip`: the strip before each group, across the flow.
 -- | `levels`: how many levels of group are inside each group. `deepest`:
 -- | how many groups deep the grouping goes.
 type Plan =
@@ -157,6 +167,7 @@ type Plan =
   , block :: Map ElementKey Int
   , blockOfGroup :: Map GroupId Int
   , breadth :: Map GroupId Number
+  , strip :: Number
   , levels :: Map GroupId Int
   , deepest :: Int
   }
@@ -231,19 +242,23 @@ chainsOf forest = foldl (walk []) { ofKey: Map.empty, ofGroup: Map.empty, levels
     _ -> 0
 
 -- | What no cut changes, read once from the finest flow.
-plan :: forall wire. Metrics -> Widths wire -> Whole wire -> Plan
-plan metrics widths whole =
+plan :: forall wire. Direction -> Metrics -> Widths wire -> Whole wire -> Plan
+plan direction metrics widths whole =
   { rank
   , span
   , block: Map.fromFoldable (Array.mapWithIndex (\index node -> Tuple node.key (blockOf (chainAt index) (rankAt index))) fine.nodes)
   , blockOfGroup: Map.mapMaybeWithKey (\_ chain -> Array.head chain >>= \outer -> _.lo <$> Map.lookup outer span) chains.ofGroup
   , breadth: breadths
+  , strip
   , levels: chains.levels
   , deepest: foldl (\most chain -> max most (Array.length chain)) 0 (Map.values chains.ofGroup)
   }
   where
   fine = whole.finest
   chains = chainsOf whole.grouping
+  strip = case direction of
+    LeftToRight -> max 0.0 whole.strip
+    TopDown -> 0.0
   count = Array.length fine.nodes
   routable = routableOf fine
 
@@ -328,7 +343,7 @@ plan metrics widths whole =
       leaving = sum (Array.filter (\r -> inside r.from && not (inside r.to)) routable <#> \r -> widthOf widths r.edge)
       -- the groups inside this one, each as broad (in units) as it is closed
       within = Array.nub (nodes >>= \index -> Array.drop 1 (Array.dropWhile (_ /= group) (chainAt index))) # Array.mapMaybe \held ->
-        Map.lookup held known <#> \pixels -> let its = Array.filter (\index -> Array.elem held (chainAt index)) nodes in { firsts: its, lasts: its, weight: pixels / metrics.unit }
+        Map.lookup held known <#> \pixels -> let its = Array.filter (\index -> Array.elem held (chainAt index)) nodes in { firsts: its, lasts: its, weight: (pixels + strip) / metrics.unit }
       -- a thing abreast: a node, a ribbon between two of the group's nodes,
       -- or a group inside it, closed
       things = (nodes <#> \index -> { firsts: [ index ], lasts: [ index ], weight: through index })
@@ -363,7 +378,7 @@ heaviest weights clashes = go
 -- | The unfolding engine for a flow, the flow running the way it is told.
 -- | The plan is made once, when the engine is first run.
 unfolding :: forall wire. Direction -> Metrics -> Widths wire -> Whole wire -> Engine wire
-unfolding direction metrics widths whole = unfoldingBy (plan metrics widths whole) direction metrics widths whole
+unfolding direction metrics widths whole = unfoldingBy (plan direction metrics widths whole) direction metrics widths whole
 
 -- | The same, by a plan already made (`plan`, of the same metrics, widths
 -- | and whole).
@@ -386,7 +401,9 @@ keyOrder key = Tuple key.primary (Tuple key.kind (Tuple key.secondary key.tertia
 -- | A box to be packed: a node, or the lane of a long ribbon. `path`: the
 -- | open groups it is in. `cluster`: the top-level blocks it is of (see the
 -- | header's rule for gaps). `node`: its place in the projection, for a node.
-type Entry = { name :: String, tier :: Int, breadth :: Number, path :: Array GroupId, key :: Key, cluster :: Tuple Int Int, node :: Maybe Int }
+-- | `before`: bare room kept before it across the flow (a closed group's
+-- | strip).
+type Entry = { name :: String, tier :: Int, breadth :: Number, before :: Number, path :: Array GroupId, key :: Key, cluster :: Tuple Int Int, node :: Maybe Int }
 
 data Block
   = Leaf Entry
@@ -498,6 +515,7 @@ laidOut planned direction metrics widths whole given projection = case direction
     { name: nameOf index
     , tier
     , breadth: breadthAt index
+    , before: if isJust (keyAt index >>= groupOfKey) then planned.strip else 0.0
     , path: pathAt index
     , key: { primary: rankAt index, kind: 0, secondary: 0, tertiary: index }
     , cluster: Tuple (blockAt index) (blockAt index)
@@ -522,6 +540,7 @@ laidOut planned direction metrics widths whole given projection = case direction
       { name: box.name
       , tier: box.layer
       , breadth: metrics.unit * unitsAt lane.link
+      , before: 0.0
       , path
       , key: { primary: after, kind: 1, secondary: rankAt r.to, tertiary: lane.link }
       , cluster: Tuple (blockAt r.from) (blockAt r.to)
@@ -579,20 +598,21 @@ laidOut planned direction metrics widths whole given projection = case direction
 
   size :: Maybe GroupId -> Int -> Block -> Sized
   size parent depth = case _ of
-    Leaf entry -> { first: entry.tier, last: entry.tier, breadth: entry.breadth, cluster: entry.cluster, tops: [ Tuple entry.name 0.0 ], frames: [] }
+    Leaf entry -> { first: entry.tier, last: entry.tier, breadth: entry.before + entry.breadth, cluster: entry.cluster, tops: [ Tuple entry.name entry.before ], frames: [] }
     Cluster group key within ->
       let
         inner = packed (Just group) (depth + 1) within
-        breadth = max inner.bottom (fromMaybe 0.0 (groupBreadth planned group))
+        -- its strip, and under it its band
+        breadth = planned.strip + max inner.bottom (fromMaybe 0.0 (groupBreadth planned group))
       in
         { first: inner.first
         , last: inner.last
         , breadth
         , cluster: Tuple key.primary key.primary
-        , tops: inner.tops
+        , tops: map (\(Tuple name at) -> Tuple name (at + planned.strip)) inner.tops
         , frames:
             [ { group, parent, depth, top: 0.0, bottom: breadth, first: inner.first, last: inner.last, members: Array.sort (Array.concatMap membersOf within) } ]
-              <> inner.frames
+              <> map (\frame -> frame { top = frame.top + planned.strip, bottom = frame.bottom + planned.strip }) inner.frames
         }
 
   membersOf :: Block -> Array Int
@@ -600,16 +620,10 @@ laidOut planned direction metrics widths whole given projection = case direction
     Leaf entry -> Array.fromFoldable entry.node
     Cluster _ _ within -> Array.concatMap membersOf within
 
-  -- room before the first block and after the last, for the outline of a
-  -- top-level group: there whether or not a group is open, so that opening
-  -- one moves nothing. Left to right the name's strip is across the flow,
-  -- in the gap between blocks; top-down it is along it, before the first row
-  strip = case direction of
-    LeftToRight -> min given.outline.header (0.7 * metrics.nodeGap)
-    TopDown -> min given.outline.padding (0.2 * metrics.nodeGap)
-  foot = min given.outline.padding (0.2 * metrics.nodeGap)
-  headroom = if outlined then strip else 0.0
-  footroom = if outlined then foot else 0.0
+  -- nothing is kept before the first block or after the last: a group's
+  -- strip is part of the group
+  headroom = 0.0
+  footroom = 0.0
 
   settled = packed Nothing 0 (blocksAt 0 entries)
   bottom = headroom + settled.bottom
@@ -689,20 +703,17 @@ laidOut planned direction metrics widths whole given projection = case direction
       after = case direction of
         LeftToRight -> across * within
         TopDown -> along.padding * within
-      -- across the flow only a top-level group has room about its band
-      above = if frame.depth == 0 then strip else 0.0
-      below = if frame.depth == 0 then foot else 0.0
     in
       { group: frame.group
       , name: groupName frame.group
       , box:
           { x: toNumber frame.first * pitch + lead - before
-          , y: frame.top + headroom - above
+          , y: frame.top + headroom
           , width: toNumber (frame.last - frame.first) * pitch + extent + before + after
-          , height: frame.bottom - frame.top + above + below
+          , height: frame.bottom - frame.top
           }
       , header: case direction of
-          LeftToRight -> above
+          LeftToRight -> planned.strip
           TopDown -> along.header
       , depth: frame.depth
       , parent: frame.parent
