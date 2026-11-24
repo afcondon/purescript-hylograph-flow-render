@@ -5,12 +5,15 @@ module Test.Render.Legible (suite) where
 import Prelude
 
 import Data.Array.NonEmpty as NonEmptyArray
+import Data.Maybe (Maybe(..))
 import Effect (Effect)
 import Effect.Console (log)
 import Data.Array as Array
 import Data.Number (abs)
 import Hylograph.Flow.Render.Engine (Direction(..))
 import Hylograph.Flow.Render.Measures (Band, Banded, Drawn, againstTheFlow, crossings, overlaps, overlapsInOneColour, pictureProportion, proportions, squat, thresholds)
+import Hylograph.Flow (ElementKey(..), GroupId(..), ItemId(..), PortName(..), Projection, StepId(..), WireId(..))
+import Hylograph.Flow.Render.Unfold (gathered)
 import Hylograph.Flow.Render.Route (Ink(..), Piece(..), Point, Route(..), flatten)
 import Test.Render.Fixtures (expect)
 
@@ -125,8 +128,58 @@ stroked colour = (falling colour) { swept = false }
 turnedBack :: Band
 turnedBack = (band 4 "ink" 6.0 [ { x: 200.0, y: 10.0 }, { x: 230.0, y: 10.0 }, { x: 230.0, y: 90.0 }, { x: 100.0, y: 90.0 }, { x: 100.0, y: 10.0 }, { x: 130.0, y: 10.0 } ]) { swept = false }
 
+-- ---------------------------------------------------------------------------
+-- parallel ribbons from a closed group
+-- ---------------------------------------------------------------------------
+
+-- a closed group, Process, fed by the intake and losing to one sink by
+-- three of its members; and two substances from the intake to the group
+losing :: Projection Number
+losing =
+  { nodes: map node [ process, StepKey (StepId "intake"), StepKey (StepId "loss") ]
+  , edges:
+      [ edge (StepKey (StepId "intake")) process "ore" 6.0
+      , edge process (StepKey (StepId "loss")) "crusher's loss" 2.0
+      , edge (StepKey (StepId "intake")) process "water" 4.0
+      , edge process (StepKey (StepId "loss")) "washer's loss" 2.5
+      , edge process (StepKey (StepId "loss")) "dryer's loss" 1.5
+      ]
+  }
+  where
+  process = StepKey (GroupStep (GroupId "Process"))
+  node key = { key, label: show key, inputs: [], outputs: [] }
+  stepOf = case _ of
+    StepKey step -> step
+    _ -> StepId "?"
+  edge from to item carries =
+    { from
+    , fromPort: Just (PortName item)
+    , to
+    , toPort: Just (PortName item)
+    , via: [ ItemKey (ItemId item) ]
+    , wires: NonEmptyArray.cons' { id: Writes (stepOf from) (PortName item) (ItemId item), payload: carries } [ { id: Reads (ItemId item) (stepOf to) (PortName item), payload: carries } ]
+    }
+
+-- what an edge's reads carry, added up: a width that adds
+readsOf :: forall r. { wires :: NonEmptyArray.NonEmptyArray { id :: WireId, payload :: Number } | r } -> Number
+readsOf found = Array.foldl (\total wire -> case wire.id of
+  Reads _ _ _ -> total + wire.payload
+  _ -> total) 0.0 (NonEmptyArray.toArray found.wires)
+
 suite :: Effect Unit
 suite = do
+  log "render: parallel ribbons from a closed group are one ribbon (0.7)"
+  let found = gathered losing
+  expect "the three ribbons from Process to the loss become one, in the place of the first; the two into Process, which come from an open node, stay two"
+    (map (\e -> { from: e.from, to: e.to }) found.edges == map (\e -> { from: e.from, to: e.to }) (Array.take 3 losing.edges))
+  expect "the one ribbon stands for all six wires and the three items, in order, names no port, and carries the six that the three carried"
+    ( (Array.index found.edges 1 <#> \e -> { wires: NonEmptyArray.length e.wires, via: e.via, ports: [ e.fromPort, e.toPort ], carries: readsOf e })
+        == Just { wires: 6, via: map (ItemKey <<< ItemId) [ "crusher's loss", "washer's loss", "dryer's loss" ], ports: [ Nothing, Nothing ], carries: 6.0 }
+    )
+  expect "what the flow carries in all is what it carried" (Array.foldl (\total e -> total + readsOf e) 0.0 found.edges == Array.foldl (\total e -> total + readsOf e) 0.0 losing.edges)
+  expect "a projection with nothing to gather is itself, and gathering twice is gathering once"
+    (let again = gathered found in map (\e -> NonEmptyArray.length e.wires) again.edges == map (\e -> NonEmptyArray.length e.wires) found.edges && Array.length again.edges == 3)
+
   log "render: the measures of legibility (0.7), on ribbons made by hand"
   log ("  thresholds: " <> show thresholds)
   let

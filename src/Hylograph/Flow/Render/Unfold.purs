@@ -112,6 +112,7 @@ module Hylograph.Flow.Render.Unfold
   , unfoldingBy
   , groupBreadth
   , rankOf
+  , gathered
   ) where
 
 import Prelude
@@ -179,6 +180,47 @@ groupOfKey = case _ of
   StepKey (GroupStep group) -> Just group
   ItemKey (GroupItem group) -> Just group
   _ -> Nothing
+
+-- | A projection with the parallel ribbons from each closed group made one
+-- | (0.7): the edges that leave one closed group's step (or its summary)
+-- | for one node become a single edge, in the place of the first of them,
+-- | that stands for all their wires (`wires` and `via` end to end, in
+-- | order) and names no port.
+-- |
+-- | `collapse` merges the wires of one item; three members of a closed
+-- | group that each lose a little to one sink write three items, and the
+-- | closed group then has three ribbons to the sink, side by side, where a
+-- | reader expects one: the group lost six, not two three times. Which
+-- | member wrote what is the open picture's to say.
+-- |
+-- | **A width must add.** An edge so gathered is as broad as its parts
+-- | together only if the engine's `Widths` reads it so: give a width that
+-- | is a sum over the edge's wires (of what each read carries, say), not
+-- | one that reads a single wire of it. Run the engine on the gathered
+-- | projection and check its layout against the same.
+-- |
+-- | Only ribbons *from* a closed group are gathered. Ribbons into one
+-- | from a single open node are parallel in the open picture too (several
+-- | substances between one pair of nodes), and stay apart. A closed group
+-- | that sends several substances to one node from *one* member has them
+-- | gathered as well, which says less than could be said; telling the two
+-- | apart needs a grouping over what wires carry.
+gathered :: forall wire. Projection wire -> Projection wire
+gathered projection = projection { edges = Array.mapMaybe one (Array.mapWithIndex Tuple projection.edges) }
+  where
+  fromGroup edge = isJust (groupOfKey edge.from)
+  alike a b = a.from == b.from && a.to == b.to
+  one (Tuple place edge) =
+    if not (fromGroup edge) then Just edge
+    else if Array.any (alike edge) (Array.take place projection.edges) then Nothing
+    else case Array.filter (alike edge) (Array.drop (place + 1) projection.edges) of
+      [] -> Just edge
+      others -> Just edge
+        { fromPort = Nothing
+        , toPort = Nothing
+        , via = edge.via <> Array.concatMap _.via others
+        , wires = foldl (\all other -> all <> other.wires) edge.wires others
+        }
 
 -- | The Sankey layout's configuration: the Sankey engine's, but for where
 -- | a node that feeds nothing stands (see the header).
