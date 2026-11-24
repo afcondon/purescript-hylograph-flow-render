@@ -365,17 +365,29 @@ treeLabelled labels decoration laid =
       nameSize = 11.0
       stripless = outline.header <= 0.0
       nameWidth named = 16.0 + heavier * estimateWidth nameSize named
-      -- The name takes gestures through its tab. Where the outline has no
-      -- strip for it at all (the unfolding engine's inner outlines, which
-      -- take no room), the name is set on the outline's top edge, the tab
-      -- as tall as the name and as wide, and both after the names of the
-      -- outlines over it whose names are on that same line: so the names of
-      -- a group and of the groups it begins with read one after another,
-      -- and each can be pointed at (0.6; an outline with a strip is as it
-      -- was)
-      tabHeight = if stripless then nameSize + 1.0 else outline.header
-      tabWidth = if stripless then nameWidth outline.name else min outline.box.width (nameWidth outline.name)
-      indent = if stripless then indentOf outline else 0.0
+      -- The name takes gestures through its tab. An outline with no strip
+      -- for its name (the unfolding engine's inner outlines, which take
+      -- no room across the flow) has its name somewhere else (0.6; an
+      -- outline with a strip is as it was):
+      --
+      -- * up its own margin, where the flow runs left to right and the
+      --   outline has a margin before its first member broad enough for a
+      --   line of the name: read from the bottom up, from the outline's
+      --   top down as far as it goes. No other outline's name and no node
+      --   is in that margin, so the name can always be pointed at;
+      -- * otherwise on its top edge, after the names of the outlines over
+      --   it that are on that same line.
+      margin = case laid.direction of
+        LeftToRight -> Array.foldl (\least index -> case Array.find (\n -> n.index == index) laid.nodes of
+          Just n -> min least (n.box.x - outline.box.x)
+          Nothing -> least) outline.box.width outline.members
+        TopDown -> 0.0
+      upright = stripless && margin >= nameSize - 2.0
+      tabHeight = if upright then max (nameSize + 1.0) (min outline.box.height (nameWidth outline.name)) else if stripless then nameSize + 1.0 else outline.header
+      tabWidth = if upright then margin else if stripless then nameWidth outline.name else min outline.box.width (nameWidth outline.name)
+      indent = if stripless && not upright then indentOf outline else 0.0
+      labelX = if upright then outline.box.x + margin / 2.0 else outline.box.x + indent + 8.0
+      labelY = if upright then outline.box.y + 4.0 else outline.box.y + outline.header / 2.0 + 1.0
     in
       withBehaviors (gestures (PointedGroup outline.group)) $
         elem Group
@@ -401,7 +413,7 @@ treeLabelled labels decoration laid =
           , elem Rect
               [ staticStr "class" "flow-outline-tab"
               , Friendly.x (outline.box.x + indent)
-              , Friendly.y (if stripless then outline.box.y - tabHeight / 2.0 else outline.box.y)
+              , Friendly.y (if stripless && not upright then outline.box.y - tabHeight / 2.0 else outline.box.y)
               , Friendly.width tabWidth
               , Friendly.height tabHeight
               , Friendly.fill paper
@@ -410,17 +422,19 @@ treeLabelled labels decoration laid =
               ]
               []
           , elem Text
-              [ staticStr "class" "flow-outline-label"
-              , Friendly.x (outline.box.x + indent + 8.0)
-              , Friendly.y (outline.box.y + outline.header / 2.0 + 1.0)
-              , Friendly.textAnchor "start"
-              , staticStr "dominant-baseline" "central"
-              , Friendly.fontSize (show nameSize)
-              , Friendly.fontWeight "600"
-              , Friendly.fill quiet
-              , staticStr "pointer-events" "none"
-              , staticStr "textContent" outline.name
-              ]
+              ( [ staticStr "class" (if upright then "flow-outline-label flow-outline-label-upright" else "flow-outline-label")
+                , Friendly.x labelX
+                , Friendly.y labelY
+                , Friendly.textAnchor (if upright then "end" else "start")
+                , staticStr "dominant-baseline" "central"
+                , Friendly.fontSize (show nameSize)
+                , Friendly.fontWeight "600"
+                , Friendly.fill quiet
+                , staticStr "pointer-events" "none"
+                , staticStr "textContent" outline.name
+                ]
+                  <> (if upright then [ staticStr "transform" ("rotate(-90 " <> show labelX <> " " <> show labelY <> ")") ] else [])
+              )
               []
           ]
 
