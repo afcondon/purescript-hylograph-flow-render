@@ -239,7 +239,7 @@ each breaking one of the laws 0.4 added.
 | `Hylograph.Flow.Render.Unfold` | The unfolding engine (0.6): `unfolding :: Direction -> Metrics -> Widths wire -> Whole wire -> Engine wire`, `Whole`, `Plan`, `plan`, `unfoldingBy`, `groupBreadth`, `rankOf`. One layout for every cut of a flow, so that two cuts' layouts can be laid side by side. |
 | `Hylograph.Flow.Render.Continuity` | `continuity`, `Continuity(..)`, `change`, `Change`, `Bar`, `opened` (0.6): what two layouts of two cuts keep, measured. |
 | `Hylograph.Flow.Render.Reshape` | `reshaped`, `blend`, `sameShape` (0.6): a layout on the way to being another. |
-| `Hylograph.Flow.Render.Transition` | `stages`, `Stage`, `frame`, `watched`, `watch` (0.6): a change of cut watched in stages, on `hylograph-transitions`. |
+| `Hylograph.Flow.Render.Transition` | `stages`, `Stage`, `frame`, `watched` (0.6; `watch` went in 0.7): a change of cut watched in stages, on `hylograph-transitions`. |
 | `Hylograph.Flow.Render.Present` | `present`, `quietKeys`, `quietly`, `quietClass` (0.6): nothing hidden, the folded drawn quiet, never narrower. |
 | `Hylograph.Flow.Render.Signal` | `hued`, `hueOf`, `groupsOver` (0.6): a group's hue on its bar and its parts. |
 | `Hylograph.Flow.Render.Motion` | `prefersReducedMotion` (0.6). Foreign; needs a window. |
@@ -266,6 +266,63 @@ svg.flow[data-direction=left-to-right|top-down]
                    > g.flow-inside[transform] > (the caller's),
                      rect.flow-port.flow-port-in|.flow-port-out[data-port]*
 ```
+
+## Changes in 0.7.0
+
+Legibility: what the unfolding engine draws is measured, and the defects
+the measures and a first look found are mended. Unpublished; branch
+`flow-legibility`.
+
+**Measures** (`Measures`): `crossings` now counts a crossing at a corner of
+either line (two neighbours of a tier that change places scored 0). New,
+of a `Banded` (`bandedOf` a layout and a colour for each edge):
+`overlaps` and `overlapsInOneColour`, `proportions` and `squat`,
+`pictureProportion`, `againstTheFlow`; `inkOf`; and `thresholds`, the
+guesses they are held against, in one place.
+
+**The unfolding engine** (`Unfold`):
+
+- *Tied outlines.* An open group whose parts stand in separate runs of
+  tiers is a piece for each run, each as broad as what is in it; nothing
+  is kept for it in the tiers between. A layout then has one
+  `PlacedOutline` for each run (`Engine.runsOf`, `runAt`). Order is kept
+  in every pair of cuts of the 60 made flows; rungs move both ways.
+- *Seams.* `Plan.parts`, `seams`: a closed bar's parts where they are
+  abreast, each marked where it only receives or only gives; and a ribbon
+  on such a bar stands in its part where the order allows.
+- *Room along the flow.* One gap between tiers for every cut, asked of
+  the proportion (`Plan.room`), and `heldTo` a length.
+- *Ribbons turned back stay in the picture*: a turn as wide as the ribbon
+  needs, and margins to hold it. Promised (`StaysWithin`) and checked
+  (`Laws.InkWithin`).
+- *The hair.* A ribbon under `thresholds.hair` is inked `Least`: drawn
+  that broad, its `breadth` still the data's. `Laws.notToScale` lists
+  them, and the conservation laws fault one that claims it wrongly.
+- `gathered`: the parallel ribbons from a closed group as one (give the
+  engine a width that adds over an edge's wires).
+
+**The tree** (`Tree.treeWith`, `Dress`): direction marks on ribbons turned
+back; a ribbon not to scale dashed, with a break mark; seams and walls on a
+closed bar; group names as headings, closed and open in one place, parts'
+labels subordinate; a name on each run of a tied outline and a tie between
+them. `tree` and `treeLabelled` draw what they drew.
+
+**Colour** (`Signal`): `palette` (five hues that pass a validator on all
+pairs for colour-blind readers), `shade`, `coloured`.
+
+**Transitions**: `Transition.watch` is gone; a page runs `watched`'s spec
+with `hylograph-transitions`' own `transitionConsumer` (0.1.1). The
+package no longer depends on `refs`.
+
+Breaking: `Transition.watch` removed; `Route.Ink` has a third constructor
+(`Least`), `Engine.Promise` a ninth (`StaysWithin`), `Laws.Law` a new one
+(`InkWithin`); `Unfold.Plan` has two more fields; the law `Outlined` allows
+several outlines to a group (each member in exactly one); `Measures.crossings`
+counts more; the unfolding engine's layouts are not 0.6.0's (the gap
+between tiers, tied outlines, where ribbons stand on a seamed bar, margins
+for turns). The Sankey and columns engines' layouts are unchanged. The
+Sankey engine does not promise `StaysWithin` and does not keep it: a broad
+ribbon it turns back can still leave its picture.
 
 ## Changes in 0.6.0
 
