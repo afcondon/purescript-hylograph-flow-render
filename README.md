@@ -239,7 +239,7 @@ each breaking one of the laws 0.4 added.
 | `Hylograph.Flow.Render.Unfold` | The unfolding engine (0.6): `unfolding :: Direction -> Metrics -> Widths wire -> Whole wire -> Engine wire`, `Whole`, `Plan`, `plan`, `unfoldingBy`, `groupBreadth`, `rankOf`. One layout for every cut of a flow, so that two cuts' layouts can be laid side by side. |
 | `Hylograph.Flow.Render.Continuity` | `continuity`, `Continuity(..)`, `change`, `Change`, `Bar`, `opened` (0.6): what two layouts of two cuts keep, measured. |
 | `Hylograph.Flow.Render.Reshape` | `reshaped`, `blend`, `sameShape` (0.6): a layout on the way to being another. |
-| `Hylograph.Flow.Render.Transition` | `stages`, `Stage`, `frame`, `watched`, `watch` (0.6): a change of cut watched in stages, on `hylograph-transitions`. |
+| `Hylograph.Flow.Render.Transition` | `stages`, `Stage`, `frame`, `watched` (0.6): a change of cut watched in stages, on `hylograph-transitions`. |
 | `Hylograph.Flow.Render.Present` | `present`, `quietKeys`, `quietly`, `quietClass` (0.6): nothing hidden, the folded drawn quiet, never narrower. |
 | `Hylograph.Flow.Render.Signal` | `hued`, `hueOf`, `groupsOver` (0.6): a group's hue on its bar and its parts. |
 | `Hylograph.Flow.Render.Motion` | `prefersReducedMotion` (0.6). Foreign; needs a window. |
@@ -318,9 +318,10 @@ Added:
   where it stood on its node's side.
 - **`Hylograph.Flow.Render.Transition`**: `stages` of a change between two
   cuts (make room, then unfold; fold, then close up), each two layouts of
-  one shape; `frame` (the picture part of the way through); `watched` (the
-  stages as a `TransitionSpec` of `hylograph-transitions`' engine) and
-  `watch` (one run on its `Coordinator`). No clock of its own.
+  one shape; `frame` (the picture part of the way through); and `watched`
+  (the stages as a `TransitionSpec` of `hylograph-transitions`' engine).
+  No clock and no runner of its own: a page gives the spec to
+  `hylograph-simulation`'s `transitionConsumer` on a `Coordinator`.
 - **`Hylograph.Flow.Render.Present`**: Present mode. `present` shortens the
   nodes of the quiet groups along the flow and never narrows anything;
   `quietly` marks them `flow-quiet`.
@@ -350,7 +351,7 @@ Breaking, against 0.5.0:
   constructor `Carried`**, so a `case` over either without a wildcard
   needs a branch for it.
 - **The package depends on `hylograph-transitions`** (0.1.0, which
-  `hylograph-selection` already brought) **and on `refs`.**
+  `hylograph-selection` already brought).
 - Nothing else: `Decoration`, `Picture`, `Layout` and every engine there
   was are as they were. Every layout the Sankey engine makes is, to the
   number, what 0.5.0 made, left to right and top-down (240 layouts of the
@@ -560,7 +561,7 @@ It depends on `hylograph-flow` (0.2.0 or later), `hylograph-layout` (0.6.0 or la
 `hylograph-graph` (0.3.1 or later), `hylograph-selection` (0.6.0 or
 later) and `hylograph-transitions` (0.1.0 or later), and on `arrays`,
 `effect`, `foldable-traversable`, `integers`, `maybe`, `numbers`,
-`ordered-collections`, `prelude`, `refs`, `strings` and `tuples`. It does not depend on any other layout engine: an engine built
+`ordered-collections`, `prelude`, `strings` and `tuples`. It does not depend on any other layout engine: an engine built
 on another library lives with that library's user.
 
 ## Running the tests
