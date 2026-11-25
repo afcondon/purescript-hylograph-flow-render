@@ -13,13 +13,10 @@ package:
   name: hylograph-flow-render
   description: >
     The shared drawing of a flow's projection: a layout by a pluggable
-    engine (its own are one layered layout that is a plain DAG when every
-    edge is as wide as every other and a Sankey when a wire's payload says
-    how wide, and a columns engine for nodes the caller sizes and ports the
-    caller places), laws and measures of any engine's layout, and one HATS
-    tree of it.
+    engine (layered, Sankey, columns, unfolding), laws and measures of any
+    engine's layout, and one HATS tree of it.
   publish:
-    version: 0.7.0
+    version: 0.7.1
     license: MIT
     location:
       githubOwner: afcondon
