@@ -16,7 +16,7 @@ package:
     (layered, Sankey, columns, unfolding), laws and measures of any engine's
     layout, and one HATS tree of it.
   publish:
-    version: 0.7.1
+    version: 0.7.2
     license: MIT
     location:
       githubOwner: afcondon
