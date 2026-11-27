@@ -37,6 +37,7 @@ import Hylograph.Flow.Render.Route as Route
 import Hylograph.Flow.Render.Sankey (Metrics, Widths(..), defaultMetrics, sankey, sankeyToward)
 import Hylograph.Flow.Render.Text (breadthOf, defaultLettering, heightOf)
 import Hylograph.Flow.Render.Tree (Bands(..), Pointed(..), plainDecoration)
+import Hylograph.Flow.Render.Tree as Tree
 import Test.Render.Fixtures (chain, drawings, expect, expectNone, quantity, sankeyMetrics, scan, subjects, weighted)
 import Test.Render.Groups as Groups
 import Test.Render.Realized (attribute, hasClass)
@@ -320,8 +321,8 @@ suite = do
   let sweeping = plainDecoration { bands = Swept }
   case pictureOf sweeping drawn, pictureOf plainDecoration drawn of
     Right with, Right without -> do
-      expect "asked for, every band is drawn as the area it sweeps: filled, not stroked, marked flow-swept, along the path the route gives"
-        ( all identity (Array.zipWith (\mark placed -> hasClass "flow-swept" mark && attribute "stroke" mark == Just "none" && attribute "fill" mark /= Just "none" && attribute "d" mark == Just (Route.sweptPath { x: 1.0, y: 0.0 } placed.route)) with.edges drawn.edges)
+      expect "asked for, every band is drawn as the area it sweeps: filled, not stroked, marked flow-swept, along the path the route gives, run on under the boxes it meets"
+        ( all identity (Array.zipWith (\mark placed -> hasClass "flow-swept" mark && attribute "stroke" mark == Just "none" && attribute "fill" mark /= Just "none" && attribute "d" mark == Just (Route.sweptPath { x: 1.0, y: 0.0 } (Tree.drawnRoute Tree.Within drawn placed))) with.edges drawn.edges)
             && Array.length with.edges == Array.length drawn.edges
         )
       expect "not asked for, a band is a stroked line, as it was" (all (\mark -> not (hasClass "flow-swept" mark) && attribute "fill" mark == Just "none") without.edges)

@@ -59,6 +59,7 @@ module Hylograph.Flow.Render.Route
   , numbers
   , transpose
   , svgPath
+  , tucked
   , sweptPath
   , hopRadius
   , distance
@@ -72,7 +73,7 @@ import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Foldable (foldl, sum)
 import Data.Int (toNumber)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Number (abs, atan2, pi, sqrt)
 import Data.Number.Format (toString)
 import Data.Tuple (Tuple(..))
@@ -282,6 +283,42 @@ svgPath = case _ of
       hop reach = " L" <> at (pointAt (reach - hopRadius)) <> " A" <> toString hopRadius <> "," <> toString hopRadius <> " 0 0 1 " <> at (pointAt (reach + hopRadius))
     in
       Array.fold (map hop clear) <> " L" <> at b
+
+-- | The same route, reaching `before` further back the way it leaves and
+-- | `after` further on the way it arrives: for a ribbon that is to end under
+-- | the box it meets and not at its edge, so that a box with round corners
+-- | leaves no notch of the ground between the two. A ribbon only; another
+-- | route is given back as it was.
+tucked :: Number -> Number -> Route -> Route
+tucked before after = case _ of
+  Ribbon ribbon ->
+    let
+      pieces = NonEmptyArray.toArray ribbon.pieces
+      first = NonEmptyArray.head ribbon.pieces
+      last = NonEmptyArray.last ribbon.pieces
+      -- where the last piece starts
+      lastFrom = fromMaybe ribbon.from (map pieceEnd (Array.last (Array.dropEnd 1 pieces)))
+      -- one step from `a` towards `b`, or towards `otherwise` where the two coincide
+      way a b otherwise =
+        let
+          pick = if distance a b > 1.0e-9 then b else otherwise
+          long = distance a pick
+        in
+          if long > 1.0e-9 then { x: (pick.x - a.x) / long, y: (pick.y - a.y) / long } else { x: 0.0, y: 0.0 }
+      leaves = case first of
+        Straight to -> way ribbon.from to to
+        Curved curve -> way ribbon.from curve.leaving curve.to
+      into = case last of
+        Straight to -> way lastFrom to to
+        Curved curve -> if distance curve.arriving curve.to > 1.0e-9 then way curve.arriving curve.to curve.to else way lastFrom curve.to curve.to
+      finish = pieceEnd last
+      from = { x: ribbon.from.x - leaves.x * before, y: ribbon.from.y - leaves.y * before }
+      to = { x: finish.x + into.x * after, y: finish.y + into.y * after }
+      lead = if before > 0.0 then [ Straight ribbon.from ] else []
+      trail = if after > 0.0 then [ Straight to ] else []
+    in
+      Ribbon ribbon { from = if before > 0.0 then from else ribbon.from, pieces = fromMaybe ribbon.pieces (NonEmptyArray.fromArray (lead <> pieces <> trail)) }
+  other -> other
 
 -- | A ribbon as the `d` of the area it sweeps (0.5): its span on its
 -- | source, carried along its centre line to its span on its target. `across`

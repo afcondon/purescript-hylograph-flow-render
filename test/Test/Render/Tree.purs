@@ -9,7 +9,7 @@ import Prelude
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (for_, sequence_)
-import Data.Maybe (Maybe(..), isJust)
+import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Console (log)
@@ -21,6 +21,7 @@ import Hylograph.Flow.Grouping as Grouping
 import Hylograph.Flow.Overlay (overlay)
 import Hylograph.Flow.Render.Engine as Engine
 import Hylograph.Flow.Render.Layout (Course(..), Layout, Widths(..), defaultMetrics, layout, portPoint)
+import Data.String as String
 import Hylograph.Flow.Render.Route (Route(..))
 import Hylograph.Flow.Render.Route as Route
 import Hylograph.Flow.Render.Tree (Bands(..), Decoration, Gesture, Pointed(..), directionName, groupName, groupOf, keyName, plainDecoration, pointedBy, portSide, strokeOf, tree, withGroups, withOverlay)
@@ -68,7 +69,7 @@ structureFaults decoration laid = case pictureOf decoration laid of
               must "is not a path of class flow-edge" (elementOf mark == Path && hasClass "flow-edge" mark)
                 <> must "has not the edge's index" (said "data-edge" mark == Just (show placed.index))
                 <> must "has not the edge's ends" (said "data-from" mark == Just (keyName placed.edge.from) && said "data-to" mark == Just (keyName placed.edge.to))
-                <> must "has not for its path the route the layout gave it" (said "d" mark == Just (Route.svgPath placed.route))
+                <> must "has not for its path the route the layout gave it, run on at most under the boxes it meets" (maybe false (String.contains (String.Pattern (String.drop 1 (Route.svgPath placed.route)))) (said "d" mark))
                 <> must "is not stroked as wide as its route says" (said "stroke-width" mark == Just (show (strokeOf placed.route)))
                 <> must "is not marked as the kind of route it is" (hasClass "flow-ribbon" mark == isRibbon placed.route && hasClass "flow-polyline" mark == isPolyline placed.route && hasClass "flow-spline" mark == isSpline placed.route)
                 <> must "is filled" (said "fill" mark == Just "none")

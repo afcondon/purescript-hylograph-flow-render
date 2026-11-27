@@ -117,6 +117,8 @@ module Hylograph.Flow.Render.Tree
   , groupName
   , hairline
   , strokeOf
+  , cornerOf
+  , drawnRoute
   , directionName
   , portSide
   , tree
@@ -312,6 +314,23 @@ paper = "#ffffff"
 -- | stroke of its own: a polyline, a spline.
 hairline :: Number
 hairline = 1.25
+
+-- | The radius of the corners of a node's box: a step's are round, unless
+-- | its label stands beside it.
+cornerOf :: Labels -> PlacedNode -> Number
+cornerOf labels n = case n.node.key, labels of
+  StepKey _, Within -> min 13.0 (n.box.height / 2.0)
+  _, _ -> 0.0
+
+-- | The route an edge is DRAWN along (0.7.2): a ribbon runs on under each
+-- | box it meets by that box's corner (`Route.tucked`), so that a round
+-- | corner leaves no notch of the ground beside the ribbon's end. The boxes
+-- | are drawn after the edges, and so over them. Drawing only: the layout's
+-- | route, which is what the laws and measures read, is as it was.
+drawnRoute :: forall wire. Labels -> Layout wire -> PlacedEdge wire -> Route
+drawnRoute labels laid e = Route.tucked (cornerAt e.edge.from) (cornerAt e.edge.to) e.route
+  where
+  cornerAt key = fromMaybe 0.0 (map (cornerOf labels) (Array.find (\n -> n.node.key == key) laid.nodes))
 
 -- | How wide an edge is stroked: a ribbon as its ink says, any other route
 -- | as a `hairline`.
@@ -638,13 +657,13 @@ treeWith dress decoration laid =
             ]
               <>
                 ( if swept then
-                    [ Friendly.d (Route.sweptPath across e.route)
+                    [ Friendly.d (Route.sweptPath across (drawnRoute labels laid e))
                     , Friendly.fill (fromMaybe ink line.colour)
                     , Friendly.fillOpacity "0.22"
                     , Friendly.stroke "none"
                     ]
                   else
-                    [ Friendly.d (Route.svgPath e.route)
+                    [ Friendly.d (Route.svgPath (drawnRoute labels laid e))
                     , Friendly.fill "none"
                     , Friendly.stroke (fromMaybe ink line.colour)
                     , Friendly.strokeWidth (strokeOf e.route)
@@ -756,7 +775,7 @@ treeWith dress decoration laid =
             , Friendly.strokeWidth 1.25
             , Friendly.fill (if isStep then fromMaybe ink mark.colour else paper)
             ]
-              <> (if isStep && not (isJust besideLeast) then [ staticStr "rx" (show (min 13.0 (n.box.height / 2.0))) ] else [])
+              <> (if cornerOf labels n > 0.0 then [ staticStr "rx" (show (cornerOf labels n)) ] else [])
           )
           []
       swatch = case mark.colour of

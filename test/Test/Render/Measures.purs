@@ -191,6 +191,11 @@ suite = do
     (near (Route.bends ell) 1.0 && near (Route.length ell) 150.0 && Route.start ell == { x: 0.0, y: 0.0 } && Route.end ell == { x: 100.0, y: 50.0 })
   expect "its points are its three corners" (Route.flatten ell == [ { x: 0.0, y: 0.0 }, { x: 100.0, y: 0.0 }, { x: 100.0, y: 50.0 } ])
   expect "its path is two straight legs" (Route.svgPath ell == "M0,0 L100,0 L100,50")
+  expect "a ribbon tucked 13 and 5 runs on that far each way, along the way it leaves and the way it arrives; its own pieces are untouched"
+    ( Route.svgPath (Route.tucked 13.0 5.0 (Ribbon { from: { x: 10.0, y: 0.0 }, pieces: NonEmptyArray.cons' (Curved { leaving: { x: 30.0, y: 0.0 }, arriving: { x: 30.0, y: 40.0 }, to: { x: 50.0, y: 40.0 } }) [ Straight { x: 50.0, y: 60.0 } ], breadth: 8.0, ink: Band })) == "M-3,0 L10,0 C30,0 30,40 50,40 L50,60 L50,65"
+    )
+  expect "tucked by nothing, a ribbon is as it was, and another kind of route is never changed"
+    (let ribbon = Ribbon { from: { x: 0.0, y: 0.0 }, pieces: NonEmptyArray.singleton (Straight { x: 9.0, y: 0.0 }), breadth: 2.0, ink: Hairline 1.0 } in Route.tucked 0.0 0.0 ribbon == ribbon && Route.tucked 13.0 13.0 ell == ell)
   expect "a jump is drawn as a half circle on the leg it is on, and is not measured: the same length, the same one bend"
     (Route.svgPath hopping == "M0,0 L47,0 A3,3 0 0 1 53,0 L100,0 L100,50" && near (Route.length hopping) 150.0 && near (Route.bends hopping) 1.0 && Route.flatten hopping == Route.flatten ell)
   expect "a jump too near a corner to hop is passed straight through"
